@@ -1,7 +1,32 @@
-# This is just an example to get you started. A typical library package
-# exports the main API in this file. Note that you cannot rename this file
-# but you can remove it if you wish.
+import hmisc/types/hnim_ast
 
-proc add*(x, y: int): int =
-  ## Adds two files together.
-  return x + y
+type
+  TraitObject* = Object[NimNode, NPragma]
+
+  DeriveConf* = object
+    traits*: seq[TraitConf]
+    commonMarkers*: seq[string]
+
+  TraitConf* = object
+    name*: string
+    triggers*: seq[string]
+    implCb*: proc(obj: TraitObject): NimNode {.noSideEffect.}
+
+macro derive*(
+  conf: static[DeriveConf], typesection: untyped): untyped =
+  discard
+
+
+func makeGetSetImpl*(obj: Object): NimNode =
+  discard
+
+const deriveGetSetConf* = TraitConf(
+  name: "GetSet",
+  triggers: @[],
+)
+
+
+const commonDerives* = DeriveConf(
+  commonMarkers: @["name"],
+  traits: @[deriveGetSetConf]
+)
