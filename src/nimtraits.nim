@@ -120,17 +120,15 @@ func makeGetSetImpl*(obj: var Object): NimNode =
           nnkAccQuoted.newTree(prName[1], ident "="),
             @[
               ("self", name, nvdVar),
-              (fld.name, mkNType(fld.fldType), nvdLet)
+              (fld.name, fld.fldType, nvdLet)
             ],
           quote do:
             self.`fldId` = `fldId`
         )
 
         # getter proc `field()`
-        setdecl.add mkProcDeclNode(
-          prName[1],
-          mkNType(fld.fldType), # XXXX
-          { "self" : name },
+        setdecl.add prName[1].mkProcDeclNode(
+          fld.fldType, { "self" : name },
           quote do:
             self.`fldId`
         )
@@ -140,18 +138,15 @@ func makeGetSetImpl*(obj: var Object): NimNode =
 #==========================  Eq implementation  ==========================#
 
 func makeEqImpl*(obj: var Object): NimNode =
-  let impl = (ident "lhs", ident "rhs").eachParallelCase(obj) do(
-    objid: LhsRhsNode, fld: TraitField) -> NimNode:
-
-    let
-      fld = ident fld.name
-      lhs = objid.lhs
-      rhs = objid.rhs
-
+  let
+    lhs = ident "lhs"
+    rhs = ident "rhs"
+  let impl = (lhs, rhs).eachParallelCase(obj) do(
+    fld: TraitField) -> NimNode:
+    let fld = ident fld.name
     quote do:
         if `lhs`.`fld` != `rhs`.`fld`:
           return false
-
 
   result = [ident "=="].mkProcDeclNode(
     mkNType("bool"),
@@ -200,7 +195,7 @@ func makeValidateImpl*(obj: var Object): NimNode =
       let fldId = ident("validate_" & fld.name)
 
       validators.add newAccQuoted(fld.name, "=").mkProcDeclNode(
-        [ ("self", name, nvdVar), ("it", mkNType(fld.fldType), nvdLet) ],
+        [ ("self", name, nvdVar), ("it", fld.fldType, nvdLet) ],
         quote do:
           when not defined(release): # XXXX
             `checks`
@@ -209,15 +204,14 @@ func makeValidateImpl*(obj: var Object): NimNode =
 
 
       validators.add mkProcDeclNode(
-        ident(fld.name),
-        mkNType(fld.fldType), # XXXX
+        ident(fld.name), fld.fldType,
         { "self" : name },
         quote do:
           self.`fldId`
       )
 
   let self = ident "self"
-  let total = self.eachCase(obj) do(objid: NimNode, fld: NField[NPragma]) -> NimNode:
+  let total = self.eachCase(obj) do(fld: NField[NPragma]) -> NimNode:
     iflet (check = fld.annotation.getElem("check")):
       let
         checks = check.getChecks(fld)
