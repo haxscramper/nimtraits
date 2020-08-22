@@ -1,5 +1,6 @@
 import sugar, strutils, sequtils, strformat
 import ../src/nimtraits
+import marshal
 
 #===========================  implementation  ============================#
 
@@ -29,3 +30,21 @@ suite "Nim traits":
               b: float
 
     echo Type(kind: false) == Type(kind: true)
+
+  test "Field validation":
+    derive commonDerives:
+      type
+        Type {.derive(Validate).} = object
+          fld {.check(it.startsWith("hhh")).}: string
+
+  test "Serialization to JSON":
+    type
+      Test = object
+        case kind: bool
+          of true:
+            a: char
+          of false:
+            b: float
+
+    let val = Test()
+    echo $$val

@@ -4,6 +4,10 @@ import hmisc/macros/[obj_field_macros, iflet]
 import hpprint
 import macros, strformat, options, sequtils, sugar
 
+# TODO support trait implementation builder debuggging - because callbacks
+#      can modifty object definition it is necessary to keep track of all
+#      transformations.
+
 type
   TraitObject* = Object[NimNode, NPragma]
   TraitField* = ObjectField[NimNode, NPragma]
@@ -15,7 +19,7 @@ type
   TraitConf* = object
     name*: string
     triggers*: seq[string]
-    implCb*: TraitObject ~> NimNode
+    implCb*: var TraitObject ~> NimNode
     overrides*: seq[string]
 
 func excl*(lhs: var seq[string], rhs: seq[string]) =
@@ -24,6 +28,7 @@ func excl*(lhs: var seq[string], rhs: seq[string]) =
     if idx >= 0:
       lhs.del idx
 
+#========================  derive implementation  ========================#
 
 macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
@@ -99,8 +104,11 @@ macro derive*(
 
 func toNimNode(str: string): NimNode = ident(str)
 
-func makeGetSetImpl*(obj: Object): NimNode =
+#========================  GetSet implementation  ========================#
+
+func makeGetSetImpl*(obj: var Object): NimNode =
   var setdecl: seq[NimNode]
+  let name = obj.name
   obj.eachField do(fld: TraitField):
     if fld.annotation.isSome():
       iflet (prName = fld.annotation.get().getElem("name")):
@@ -111,7 +119,7 @@ func makeGetSetImpl*(obj: Object): NimNode =
         setdecl.add mkProcDeclNode(
           nnkAccQuoted.newTree(prName[1], ident "="),
             @[
-              ("self", obj.name, nvdVar),
+              ("self", name, nvdVar),
               (fld.name, mkNType(fld.fldType), nvdLet)
             ],
           quote do:
@@ -122,14 +130,16 @@ func makeGetSetImpl*(obj: Object): NimNode =
         setdecl.add mkProcDeclNode(
           prName[1],
           mkNType(fld.fldType), # XXXX
-          { "self" : obj.name },
+          { "self" : name },
           quote do:
             self.`fldId`
         )
 
   result = newStmtList(setdecl)
 
-func makeEqImpl*(obj: Object): NimNode =
+#==========================  Eq implementation  ==========================#
+
+func makeEqImpl*(obj: var Object): NimNode =
   let impl = (ident "lhs", ident "rhs").eachParallelCase(obj) do(
     objid: LhsRhsNode, fld: TraitField) -> NimNode:
 
@@ -154,17 +164,36 @@ func makeEqImpl*(obj: Object): NimNode =
     )
   )
 
-func makeValidateImpl*(obj: Object): NimNode =
+#=======================  Validate implementation  =======================#
+
+type
+  ValidationError* = ref object of CatchableError
+
+func makeValidateImpl*(obj: var Object): NimNode =
+  ## NOTE all 'validated' fields will be made private and renamed
+  ## (prefix `validated` will be added).
   discard
 
-func makeDefaultImpl*(obj: Object): NimNode =
+
+#=======================  Default implementation  ========================#
+
+func makeDefaultImpl*(obj: var Object): NimNode =
   discard
 
-func makeJsonReprImpl*(obj: Object): NimNode =
+
+#=======================  JsonRepr implementation  =======================#
+
+func makeJsonReprImpl*(obj: var Object): NimNode =
   discard
 
-func makeXmlReprImpl*(obj: Object): NimNode =
+
+#=======================  XmlRepr implementation  ========================#
+
+func makeXmlReprImpl*(obj: var Object): NimNode =
   discard
+
+
+#====================  Default set of trait builders  ====================#
 
 const commonDerives* = DeriveConf(
   traits: @[
