@@ -2,7 +2,7 @@ import hmisc/types/hnim_ast
 import hmisc/hexceptions
 import hmisc/macros/[obj_field_macros, iflet]
 import hpprint
-import macros, strformat, options, sequtils
+import macros, strformat, options, sequtils, sugar
 
 type
   TraitObject* = Object[NimNode, NPragma]
@@ -16,9 +16,18 @@ type
     name*: string
     triggers*: seq[string]
     implCb*: TraitObject ~> NimNode
+    overrides*: seq[string]
+
+func excl*(lhs: var seq[string], rhs: seq[string]) =
+  for it in rhs:
+    let idx = lhs.find(it)
+    if idx >= 0:
+      lhs.del idx
+
 
 macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
+  # TODO provide compilation errors on unknown `Derive` annotations
   var traitImpls: seq[NimNode]
   result = newStmtList()
   typesection.assertNodeKind {nnkStmtList}
@@ -32,16 +41,19 @@ macro derive*(
           if obj.annotation.isSome():
             for annot in obj.annotation.get().elements:
               if annot.kind == nnkCall and annot[0] == ident("derive"):
-                for trait in annot[1..^1]: # for all traits
-                  let name =
+                var deriveNames = collect(newSeq):
+                  for trait in annot[1..^1]: # for all traits
                     if trait.kind == nnkIdent:
                       trait.strVal()
-                    else: # assuming `nnkCall`
+                    else: # assuming `nnkCall`, dropping parameters for now
                       trait[0].strVal()
 
-                  for impl in conf.traits:
-                    if impl.name == name and (impl.implCb != nil):
-                      traitImpls.add impl.implCb(obj)
+
+                for impl in conf.traits:
+                  if impl.name in deriveNames:
+                    deriveNames.excl impl.overrides # XXXX no test for
+                    # mutually excusive traits
+                    traitImpls.add impl.implCb(obj)
 
           let
             fldAnnots = conf.traits.mapIt(it.triggers).concat()
@@ -142,12 +154,50 @@ func makeEqImpl*(obj: Object): NimNode =
     )
   )
 
-  debugecho $!result
+func makeValidateImpl*(obj: Object): NimNode =
+  discard
 
+func makeDefaultImpl*(obj: Object): NimNode =
+  discard
+
+func makeJsonReprImpl*(obj: Object): NimNode =
+  discard
+
+func makeXmlReprImpl*(obj: Object): NimNode =
+  discard
 
 const commonDerives* = DeriveConf(
   traits: @[
-    TraitConf(name: "GetSet", triggers: @["name"], implCb: makeGetSetImpl),
-    TraitConf(name: "Eq", triggers: @[], implCb: makeEqImpl)
+    TraitConf(
+      name: "GetSet",
+      triggers: @["name"],
+      implCb: makeGetSetImpl,
+    ),
+    TraitConf(
+      name: "Validate",
+      triggers: @["check", "name"],
+      overrides: @["GetSet", "Default"],
+      implCb: makeValidateImpl,
+    ),
+    TraitConf(
+      name: "Eq",
+      triggers: @[],
+      implCb: makeEqImpl
+    ),
+    TraitConf(
+      name: "Default",
+      triggers: @[],
+      implCb: makeDefaultImpl
+    ),
+    TraitConf(
+      name: "JsonRepr",
+      triggers: @[],
+      implCb: makeJsonReprImpl
+    ),
+    TraitConf(
+      name: "XmlRepr",
+      triggers: @[],
+      implCb: makeXmlReprImpl
+    )
   ]
 )
