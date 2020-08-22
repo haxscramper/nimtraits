@@ -21,9 +21,9 @@ macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
   var traitImpls: seq[NimNode]
   result = newStmtList()
-  typesection.expectKind nnkStmtList
+  typesection.assertNodeKind {nnkStmtList}
   for section in typesection:
-    section.expectKind nnkTypeSection
+    section.assertNodeKind {nnkTypeSection}
     var restypes: seq[NimNode]
     for obj in section:
       case obj.kind:
@@ -82,7 +82,7 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-  echo result.toStrLit()
+  # echo result.toStrLit()
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -117,15 +117,37 @@ func makeGetSetImpl*(obj: Object): NimNode =
 
   result = newStmtList(setdecl)
 
+func makeEqImpl*(obj: Object): NimNode =
+  let impl = (ident "lhs", ident "rhs").eachParallelCase(obj) do(
+    objid: LhsRhsNode, fld: TraitField) -> NimNode:
 
-const deriveGetSetConf* = TraitConf(
-  name: "GetSet",
-  triggers: @["name"],
-  implCb: makeGetSetImpl
-)
+    let
+      fld = ident fld.name
+      lhs = objid.lhs
+      rhs = objid.rhs
+
+    quote do:
+        if `lhs`.`fld` != `rhs`.`fld`:
+          return false
+
+
+  result = [ident "=="].mkProcDeclNode(
+    mkNType("bool"),
+    { "lhs" : obj.name, "rhs" : obj.name },
+    pragma = mkNPragma("noSideEffect"),
+    impl = (
+      quote do:
+        `impl`
+        return true
+    )
+  )
+
+  debugecho $!result
 
 
 const commonDerives* = DeriveConf(
-  # commonMarkers: @["name"],
-  traits: @[deriveGetSetConf]
+  traits: @[
+    TraitConf(name: "GetSet", triggers: @["name"], implCb: makeGetSetImpl),
+    TraitConf(name: "Eq", triggers: @[], implCb: makeEqImpl)
+  ]
 )
