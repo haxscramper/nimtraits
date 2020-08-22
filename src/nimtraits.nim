@@ -179,22 +179,24 @@ func makeValidateImpl*(obj: var Object): NimNode =
   var validators: seq[NimNode]
   let name = obj.name
 
+  func getChecks(check: NimNode, fld: TraitField): NimNode =
+    newStmtList: collect(newSeq):
+      for ch in check[1..^1]:
+        let errStr = &"Error while validating field {fld.name} " &
+          &"for type {name}: assertion '" & ch.toStrLit().strVal() & "' failed."
+
+        quote do: # TODO generate static assert for correct return type
+          if not `ch`:
+            var exc: ValidationError
+            new(exc)
+            exc.msg = `errStr`
+            raise exc
+            # raise newException(ValidationError, `errStr`)
+
+
   obj.eachFieldMut do(fld: var TraitField):
     iflet (check = fld.annotation.getElem("check")):
-      let checks = newStmtList: collect(newSeq):
-        for ch in check[1..^1]:
-          let errStr = &"Error while setting field {fld.name} " &
-            &"for type {name}: assertion '" & ch.toStrLit().strVal() & "' failed."
-
-          quote do: # TODO generate static assert for correct return type
-            if not `ch`:
-              var exc: ValidationError
-              new(exc)
-              exc.msg = `errStr`
-              raise exc
-              # raise newException(ValidationError, `errStr`)
-
-
+      let checks = check.getChecks(fld)
       let fldId = ident("validate_" & fld.name)
 
       validators.add newAccQuoted(fld.name, "=").mkProcDeclNode(
@@ -214,7 +216,23 @@ func makeValidateImpl*(obj: var Object): NimNode =
           self.`fldId`
       )
 
-      fld.name = "validate_" & fld.name
+  let self = ident "self"
+  let total = self.eachCase(obj) do(objid: NimNode, fld: NField[NPragma]) -> NimNode:
+    iflet (check = fld.annotation.getElem("check")):
+      let
+        checks = check.getChecks(fld)
+        fldId = ident fld.name
+
+      return quote do:
+        let it {.inject.} = `self`.`fldId`
+        `checks`
+
+  validators.add ident("validate").mkProcDeclNode(
+    { "self" : obj.name }, total, mkNPragma("noSideEffect"))
+
+
+  obj.eachFieldMut do(fld: var TraitField):
+    fld.name = "validate_" & fld.name
 
   result = newStmtList(validators)
 
