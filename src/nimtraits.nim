@@ -99,7 +99,7 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-  # echo result.toStrLit()
+  echo result.toStrLit()
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -169,10 +169,55 @@ func makeEqImpl*(obj: var Object): NimNode =
 type
   ValidationError* = ref object of CatchableError
 
+# NOTE this is a really questionable implementation choice - mutate
+# all fields and
+
+
 func makeValidateImpl*(obj: var Object): NimNode =
   ## NOTE all 'validated' fields will be made private and renamed
   ## (prefix `validated` will be added).
-  discard
+  var validators: seq[NimNode]
+  let name = obj.name
+
+  obj.eachFieldMut do(fld: var TraitField):
+    iflet (check = fld.annotation.getElem("check")):
+      let checks = newStmtList: collect(newSeq):
+        for ch in check[1..^1]:
+          let errStr = &"Error while setting field {fld.name} " &
+            &"for type {name}: assertion '" & ch.toStrLit().strVal() & "' failed."
+
+          quote do: # TODO generate static assert for correct return type
+            if not `ch`:
+              var exc: ValidationError
+              new(exc)
+              exc.msg = `errStr`
+              raise exc
+              # raise newException(ValidationError, `errStr`)
+
+
+      let fldId = ident("validate_" & fld.name)
+
+      validators.add newAccQuoted(fld.name, "=").mkProcDeclNode(
+        [ ("self", name, nvdVar), ("it", mkNType(fld.fldType), nvdLet) ],
+        quote do:
+          when not defined(release): # XXXX
+            `checks`
+          self.`fldId` = it
+      )
+
+
+      validators.add mkProcDeclNode(
+        ident(fld.name),
+        mkNType(fld.fldType), # XXXX
+        { "self" : name },
+        quote do:
+          self.`fldId`
+      )
+
+      fld.name = "validate_" & fld.name
+
+  result = newStmtList(validators)
+
 
 
 #=======================  Default implementation  ========================#

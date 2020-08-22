@@ -37,6 +37,14 @@ suite "Nim traits":
         Type {.derive(Validate).} = object
           fld {.check(it.startsWith("hhh")).}: string
 
+    var t: Type # no default constrctor, all validations are basically
+                # useless
+
+    expect ValidationError:
+      t.fld = "####"
+
+    # t.fld = "123132"
+
   test "Serialization to JSON":
     type
       Test = object
