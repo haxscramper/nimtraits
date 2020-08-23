@@ -1,0 +1,129 @@
+#+title: readme
+#+property: header-args:nim+ :flags -d:plainStdout --cc:tcc --hints:off
+#+property: header-args:nim+ :import nimtraits macros
+
+Proof-of-concept macro library for automatic rust-like trait
+derivation. Provides API for user-defined traits, field renaming.
+Currently implemented traits for equality (~==~ operator), hash, field
+validation (check value assertions for setting/getting values from
+fields), immutable field annoations (automatically prevent
+modification of the field).
+
+* Example
+
+#+begin_src nim :exports both
+  import hashes, tables, nimtraits
+
+  derive commonDerives:
+    type
+      Hhhhh {.derive(Hash, Eq).} = object
+        f1: float
+        f3: int
+        case f5: bool
+          of false:
+            f2: char
+          else:
+            f4: float
+
+  var hh: Table[Hhhhh, int]
+  hh[Hhhhh(f3: 12)] = 1231
+  echo hh
+#+end_src
+
+#+RESULTS:
+: {(f1: 0.0, f3: 12, f5: false, f2: '\x00'): 1231}
+
+** Regular use API
+
+*** ~Eq~ trait
+
+Zero configuration necessary - add ~{.derive(Eq).}~ to the object
+annotation and ~==~ proc will be automatically declared.
+
+#+begin_src nim :exports both
+  expandMacros:
+    derive commonDerives:
+      type
+        Test {.derive(Eq).} = object
+          f2: float
+          case f3: bool
+            of true:
+              f4: int
+            else:
+              f5: string
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+type
+  Test = object
+    f2: float
+    case f3: bool
+    of true:
+        f4: int
+
+    else:
+        f5: string
+
+
+proc `==`(lhs: Test; rhs: Test): bool {.noSideEffect.} =
+  if (
+    not (lhs.f2 == rhs.f2)):
+    return false
+  if (
+    not (lhs.f3 == rhs.f3)):
+    return false
+  if lhs.f3 == rhs.f3:
+    case lhs.f3
+    of true:
+      if (
+        not (lhs.f4 == rhs.f4)):
+        return false
+    else:
+      if (
+        not (lhs.f5 == rhs.f5)):
+        return false
+  return true
+
+#+end_example
+
+*** ~Hash~ trait
+
+Declare ~hash~ function for object.
+
+*** ~Validate~ trait
+
+Annotate fields with ~{.check(<bool expression>).} that will run each
+time you set a value to a field. If assertion fails ~ValidationError~
+is raised.
+
+#+begin_src nim
+  import strutils
+  derive commonDerives:
+    type
+      Type {.derive(Validate).} = object
+        fld {.check(it.startsWith("hhh")).}: string
+
+  var t: Type
+  try:
+    t.fld = "####"
+  except ValidationError:
+    echo getCurrentExceptionMsg()
+#+end_src
+
+#+RESULTS:
+: Error while validating field 'Type.fld': assertion 'it.startsWith("hhh")' failed.
+
+Two constants are accessible in the ~check~ expression:
+- ~it~ value to be set to field
+- ~self~ current object
+
+** Implementing custom traits
+
+
+* Contribution & development
+
+This is a proof-of-concept library - any input on API design,
+questions and suggestions about implementation are more than welcome.
+My [[https://discord.gg/hjfYJCU][discord server]].
