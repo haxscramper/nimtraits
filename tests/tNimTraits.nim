@@ -86,3 +86,20 @@ suite "Nim traits":
 
     let val = Test()
     echo $$val
+
+suite "Nim traits combinations":
+  derive conf:
+    type
+      Test {.derive(Eq, Validate).} = object
+        case str: bool
+          of true:
+            sfld {.check(it.len < 20).}: string
+          of false:
+            ifld {.check(it mod 2 == 0).}: int
+
+  var t: Test
+
+  echo Test() == Test()
+
+  expect ValidationError:
+    t.sfld = "1039285701394875091843750984231570234897"

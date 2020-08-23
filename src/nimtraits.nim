@@ -1,8 +1,9 @@
 import hmisc/types/hnim_ast
 import hmisc/hexceptions
+import hmisc/algo/halgorithm
 import hmisc/macros/[obj_field_macros, iflet]
 import hpprint
-import macros, strformat, options, sequtils, sugar
+import macros, strformat, options, sequtils, sugar, strutils
 
 # TODO support trait implementation builder debuggging - because callbacks
 #      can modifty object definition it is necessary to keep track of all
@@ -30,6 +31,23 @@ func excl*(lhs: var seq[string], rhs: seq[string]) =
     let idx = lhs.find(it)
     if idx >= 0:
       lhs.del idx
+
+const internalPrefix*: string = "impl_"
+
+func getApiName*(fld: TraitField): string =
+  fld.name.dropPrefix(internalPrefix)
+
+func isInternalFld*(fld: TraitField): bool =
+  fld.name.startsWith(internalPrefix)
+
+func getInternalName*(fld: TraitField): string =
+  fld.name
+
+func renameInternal*(fld: var TraitField): void =
+  fld.name.addPrefix(internalPrefix)
+
+func asInternal*(fld: TraitField): string =
+  fld.name.addPrefix(internalPrefix)
 
 #========================  derive implementation  ========================#
 
@@ -159,7 +177,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
         )
 
   result = newStmtList(setdecl)
-  debugecho $!result
+  # debugecho $!result
 
 #==========================  Eq implementation  ==========================#
 
@@ -186,6 +204,8 @@ func makeEqImpl*(obj: var Object, params: DeriveParams): NimNode =
     exported = params.exported
   )
 
+  # debugecho $!result
+
 #=======================  Validate implementation  =======================#
 
 type
@@ -204,8 +224,8 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
   func getChecks(check: NimNode, fld: TraitField): NimNode =
     newStmtList: collect(newSeq):
       for ch in check[1..^1]:
-        let errStr = &"Error while validating field {fld.name} " &
-          &"for type {name}: assertion '" & ch.toStrLit().strVal() & "' failed."
+        let errStr = &"Error while validating field '{name}.{fld.name}'" &
+          &": assertion '" & ch.toStrLit().strVal() & "' failed."
 
         quote do: # TODO generate static assert for correct return type
           if not `ch`:
@@ -219,9 +239,10 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
   obj.eachFieldMut do(fld: var TraitField):
     iflet (check = fld.annotation.getElem("check")):
       let checks = check.getChecks(fld)
-      let fldId = ident("validate_" & fld.name)
+      fld.renameInternal()
+      let fldId = ident fld.getInternalName()
 
-      validators.add newAccQuoted(fld.name, "=").mkProcDeclNode(
+      validators.add newAccQuoted(fld.getAPIname(), "=").mkProcDeclNode(
         [ ("self", name, nvdVar), ("it", fld.fldType, nvdLet) ],
         quote do:
           when not defined(release): # XXXX
@@ -234,7 +255,7 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
 
 
       validators.add mkProcDeclNode(
-        ident(fld.name), fld.fldType,
+        ident(fld.getAPIname()), fld.fldType,
         { "self" : name },
         newReturn(newDotExpr(ident "self", fldId)),
         exported = params.exported
@@ -258,10 +279,8 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
   )
 
 
-  obj.eachFieldMut do(fld: var TraitField):
-    fld.name = "validate_" & fld.name
-
   result = newStmtList(validators)
+  # debugecho $!result
 
 
 #=========================  Hash implementation  =========================#
