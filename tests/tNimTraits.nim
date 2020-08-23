@@ -1,4 +1,4 @@
-import sugar, strutils, sequtils, strformat, hashes, tables
+import sugar, strutils, sequtils, strformat, hashes, tables, macros
 import ../src/nimtraits
 import marshal
 import hmisc/helpers
@@ -30,13 +30,28 @@ hh[Hhhhh(f3: 12)] = 1231
 
 suite "Nim traits":
   test "Derive get/set":
+    block: # Two fields with the same API name
+      derive conf:
+        type GetSetSameName {.derive(GetSet).} = object
+          case ch: char
+            of 'e':
+              e {.name(goodName).}: int
+            of 'z':
+              z {.name(goodName).}: int
+            else:
+              discard
+
+      var tt: GetSetSameName
+
+
+
     block: # Getter/setter
       derive conf:
         type
-          Type {.derive(GetSet).} = object
+          Type1 {.derive(GetSet).} = object
             f1 {.name(field).}: int
 
-      var tt: Type
+      var tt: Type1
       tt.field = 12
       echo tt.field
 
@@ -49,6 +64,8 @@ suite "Nim traits":
       echo tt.field
       when false: # NOTE compilation error test
         tt.field = 12312
+
+
 
 
   test "Derive eq":

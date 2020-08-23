@@ -3,7 +3,7 @@ import hmisc/hexceptions
 import hmisc/algo/halgorithm
 import hmisc/macros/[obj_field_macros, iflet]
 import hpprint
-import macros, strformat, options, sequtils, sugar, strutils
+import macros, strformat, options, sequtils, sugar, strutils, tables
 
 # TODO support trait implementation builder debuggging - because callbacks
 #      can modifty object definition it is necessary to keep track of all
@@ -35,7 +35,11 @@ func excl*(lhs: var seq[string], rhs: seq[string]) =
 const internalPrefix*: string = "impl_"
 
 func getApiName*(fld: TraitField): string =
-  fld.name.dropPrefix(internalPrefix)
+  iflet (fname = fld.annotation.getElem("name")):
+    fname.expectKind nnkCall
+    fname[1].strVal
+  else:
+    fld.name.dropPrefix(internalPrefix)
 
 func isInternalFld*(fld: TraitField): bool =
   fld.name.startsWith(internalPrefix)
@@ -48,6 +52,11 @@ func renameInternal*(fld: var TraitField): void =
 
 func asInternal*(fld: TraitField): string =
   fld.name.addPrefix(internalPrefix)
+
+# func requiresRenaming*(fld: TraitField): bool =
+#   fld.markedAs("immut") or
+#   fld.markedAs("name") or
+#   fld.markedAs("check")
 
 #========================  derive implementation  ========================#
 
@@ -121,7 +130,7 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-  # echo result.toStrLit()
+  echo result.toStrLit()
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -129,55 +138,183 @@ func toNimNode(str: string): NimNode = ident(str)
 #========================  GetSet implementation  ========================#
 
 func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
-  var setdecl: seq[NimNode]
-  let name = obj.name
-  obj.eachField do(fld: TraitField):
-    if fld.annotation.isSome():
-      iflet (prName = fld.annotation.get().getElem("name")):
-        assertNodeKind(prName[1], {nnkIdent})
-        let
-          fldId = ident fld.name
-          objName = $name
+  let objName = obj.name
+  var sameNames: Table[string, NType]
 
-        if fld.markedAs("immut"):
-          # setter proc `field=`
-          setdecl.add mkProcDeclNode(
-            nnkAccQuoted.newTree(prName[1], ident "="),
-              @[
-                ("self", name, nvdVar),
-                (fld.name, fld.fldType, nvdLet)
-              ],
-            newEmptyNode(),
-            pragma = mkNPragma(
-              nnkExprColonExpr.newTree(
-                ident("error"),
-                newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
-                  "'const' and cannot be assigned to"))),
-            exported = params.exported
-          )
+  block: # generate list of fields with the same public name; store
+         # their types
+    obj.eachFieldMut do(fld: var TraitField):
+      if fld.markedAs("name"):
+        let fname = fld.getApiName()
+        if fname notin sameNames:
+          sameNames[fname] = fld.fldType
         else:
-          # setter proc `field=`
-          setdecl.add mkProcDeclNode(
-            nnkAccQuoted.newTree(prName[1], ident "="),
-              @[
-                ("self", name, nvdVar),
-                (fld.name, fld.fldType, nvdLet)
-              ],
-            quote do:
-              self.`fldId` = `fldId`
-            ,
-            exported = params.exported
-          )
+          # TODO better error message
+          assert fld.fldType == sameNames[fname]
 
-        # getter proc `field()`
-        setdecl.add prName[1].mkProcDeclNode(
-          fld.fldType, { "self" : name },
-          newReturn(newDotExpr(ident "self", fldId)),
-          exported = params.exported
-        )
+        fld.renameInternal()
 
-  result = newStmtList(setdecl)
-  # debugecho $!result
+  let
+    self = ident "self"
+    it = ident "it"
+
+  result = newStmtList()
+
+  block:
+    for apiName, fldType in sameNames:
+      # Iterate over all pats; find all that can return result
+      var resPaths: seq[tuple[path: NPath[NPragma], fld: TraitField]]
+      discard self.eachPath(obj) do(
+        path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
+        for fld in flds:
+          if fld.getApiName() == apiName:
+            resPaths.add (path, fld)
+
+      # for each possible path generate 'isOnPath' predicate
+      var resGets: seq[NimNode]
+      for (path, fld) in resPaths:
+        let
+          fldId = ident fld.getInternalName()
+          onPath = self.onPath(path)
+        resGets.add quote do:
+          if `onPath`:
+            return `self`.`fldId`
+
+      var getImpl = newStmtList(resGets,)
+      getImpl.add quote do: # if all checks failed - object has wrong kind
+        raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
+
+
+      result.add (ident apiName).mkProcDeclNode(
+        fldType, { "self" : objName },
+        getImpl,
+        exported = params.exported
+      )
+
+  debugecho $!result
+
+
+
+
+  # block: # getter proc `field()`
+  #   for name, fldType in sameNames:
+  #     let getImpl = self.eachPath(obj) do(
+  #       path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
+  #       var getFld: NimNode
+  #       var matches: bool = false
+  #       for fld in flds:
+  #         debugecho fld.getApiName(), " ", name
+  #         if fld.getApiName() == name:
+  #           getFld = newReturn(newDotExpr(self, ident fld.getInternalName()))
+  #           matches = true
+
+  #       if not matches:
+  #         let errLit = newLit("#[ IMPLEMENT:ERRMSG ]#")
+  #         getFld = quote do:
+  #           if true:
+  #             raiseAssert(`errLit`)
+
+  #       getFld
+
+  #     result.add (ident name).mkProcDeclNode(
+  #       fldType, { "self" : objName },
+  #       getImpl,
+  #       exported = params.exported
+  #     )
+
+  # block: # setter for proc `field=`
+  #   for name, fldType in sameNames:
+  #     let setImpl = self.eachPath(obj) do(
+  #       path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
+  #       var matches: bool = false
+  #       for fld in flds:
+  #         if fld.getApiName() == name:
+  #           let fldId = ident fld.getInternalName()
+  #           matches = true
+  #           result = quote do:
+  #             debugecho "iii"
+  #             # self.`fldId` = `it`
+
+  #       if not matches:
+  #         result = newCall(ident "raiseAssert",
+  #                          newLit("#[ IMPLEMENT:ERRMSG ]#"))
+
+  #     result.add mkProcDeclNode(
+  #       nnkAccQuoted.newTree(ident name, ident "="),
+  #         @[
+  #           ("self", objName, nvdVar),
+  #           ("it", fldType, nvdLet)
+  #         ],
+  #       impl = setImpl,
+  #       exported = params.exported
+  #     )
+
+
+
+        # if fld.markedAs("immut"):
+        #   # setter proc `field=`
+        #   setdecl.add mkProcDeclNode(
+        #     nnkAccQuoted.newTree(prName[1], ident "="),
+        #       @[
+        #         ("self", name, nvdVar),
+        #         (fld.name, fld.fldType, nvdLet)
+        #       ],
+        #     newEmptyNode(),
+        #     pragma = mkNPragma(
+        #       nnkExprColonExpr.newTree(
+        #         ident("error"),
+        #         newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
+        #           "'const' and cannot be assigned to"))),
+        #     exported = params.exported
+        #   )
+        # else:
+
+
+  # obj.eachCase do(fld: TraitField):
+  #   if fld.annotation.isSome():
+  #     iflet (prName = fld.annotation.get().getElem("name")):
+  #       assertNodeKind(prName[1], {nnkIdent})
+  #       let
+  #         fldId = ident fld.name
+  #         objName = $name
+
+  #       if fld.markedAs("immut"):
+  #         # setter proc `field=`
+  #         setdecl.add mkProcDeclNode(
+  #           nnkAccQuoted.newTree(prName[1], ident "="),
+  #             @[
+  #               ("self", name, nvdVar),
+  #               (fld.name, fld.fldType, nvdLet)
+  #             ],
+  #           newEmptyNode(),
+  #           pragma = mkNPragma(
+  #             nnkExprColonExpr.newTree(
+  #               ident("error"),
+  #               newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
+  #                 "'const' and cannot be assigned to"))),
+  #           exported = params.exported
+  #         )
+  #       else:
+  #         # setter proc `field=`
+  #         setdecl.add mkProcDeclNode(
+  #           nnkAccQuoted.newTree(prName[1], ident "="),
+  #             @[
+  #               ("self", name, nvdVar),
+  #               (fld.name, fld.fldType, nvdLet)
+  #             ],
+  #           quote do:
+  #             self.`fldId` = `fldId`
+  #           ,
+  #           exported = params.exported
+  #         )
+
+  #       # getter proc `field()`
+  #       setdecl.add prName[1].mkProcDeclNode(
+  #         fld.fldType, { "self" : name },
+  #         newReturn(newDotExpr(ident "self", fldId)),
+  #         exported = params.exported
+  #       )
+
 
 #==========================  Eq implementation  ==========================#
 
@@ -203,8 +340,6 @@ func makeEqImpl*(obj: var Object, params: DeriveParams): NimNode =
     ),
     exported = params.exported
   )
-
-  # debugecho $!result
 
 #=======================  Validate implementation  =======================#
 
