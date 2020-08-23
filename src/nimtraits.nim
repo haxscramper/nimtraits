@@ -130,7 +130,7 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-  echo result.toStrLit()
+  # echo result.toStrLit()
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -170,28 +170,55 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
           if fld.getApiName() == apiName:
             resPaths.add (path, fld)
 
-      # for each possible path generate 'isOnPath' predicate
-      var resGets: seq[NimNode]
-      for (path, fld) in resPaths:
-        let
-          fldId = ident fld.getInternalName()
-          onPath = self.onPath(path)
-        resGets.add quote do:
-          if `onPath`:
-            return `self`.`fldId`
+      block: # getter builder
+        # for each possible path generate 'isOnPath' predicate
+        var resGets: seq[NimNode]
+        for (path, fld) in resPaths:
+          let
+            fldId = ident fld.getInternalName()
+            onPath = self.onPath(path)
+          resGets.add quote do:
+            if `onPath`:
+              return `self`.`fldId`
 
-      var getImpl = newStmtList(resGets,)
-      getImpl.add quote do: # if all checks failed - object has wrong kind
-        raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
+        var getImpl = newStmtList(resGets)
+        getImpl.add quote do: # if all checks failed - object has wrong kind
+          raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
 
 
-      result.add (ident apiName).mkProcDeclNode(
-        fldType, { "self" : objName },
-        getImpl,
-        exported = params.exported
-      )
+        result.add (ident apiName).mkProcDeclNode(
+          fldType, { "self" : objName },
+          getImpl,
+          exported = params.exported
+        )
 
-  debugecho $!result
+      block: # setter builder
+        # for each possible path generate 'isOnPath' predicate
+        var resGets: seq[NimNode]
+        for (path, fld) in resPaths:
+          let
+            fldId = ident fld.getInternalName()
+            onPath = self.onPath(path)
+          resGets.add quote do:
+            if `onPath`:
+              `self`.`fldId` = `it`
+
+        var setImpl = newStmtList(resGets)
+        setImpl.add quote do:
+          raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
+
+        result.add mkProcDeclNode(
+          nnkAccQuoted.newTree(ident apiName, ident "="),
+            @[
+              ("self", objName, nvdVar),
+              ("it", fldType, nvdLet)
+            ],
+          impl = setImpl,
+          exported = params.exported
+        )
+
+  # block:
+  #   for apiName, fldType in sameNames:
 
 
 
