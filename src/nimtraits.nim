@@ -163,17 +163,17 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   block:
     for apiName, fldType in sameNames:
       # Iterate over all pats; find all that can return result
-      var resPaths: seq[tuple[path: NPath[NPragma], fld: TraitField]]
+      var resPaths: seq[tuple[path: NPath[NPragma], fld: TraitField, immut: bool]]
       discard self.eachPath(obj) do(
         path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
         for fld in flds:
           if fld.getApiName() == apiName:
-            resPaths.add (path, fld)
+            resPaths.add (path, fld, fld.markedAs("immut"))
 
       block: # getter builder
         # for each possible path generate 'isOnPath' predicate
         var resGets: seq[NimNode]
-        for (path, fld) in resPaths:
+        for (path, fld, _) in resPaths:
           let
             fldId = ident fld.getInternalName()
             onPath = self.onPath(path)
@@ -194,34 +194,74 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
 
       block: # setter builder
         # for each possible path generate 'isOnPath' predicate
-        var resGets: seq[NimNode]
-        for (path, fld) in resPaths:
-          let
-            fldId = ident fld.getInternalName()
-            onPath = self.onPath(path)
-          resGets.add quote do:
-            if `onPath`:
-              `self`.`fldId` = `it`
+        # if fld.markedAs("immut"):
+        #   # setter proc `field=`
 
-        var setImpl = newStmtList(resGets)
-        setImpl.add quote do:
-          raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
+        if resPaths.allOfIt(it.immut):
+          result.add mkProcDeclNode(
+            nnkAccQuoted.newTree(ident apiName, ident "="),
+              @[
+                ("self", objName, nvdVar),
+                ("it", fldType, nvdLet)
+              ],
+            newEmptyNode(),
+            pragma = mkNPragma(
+              nnkExprColonExpr.newTree(
+                ident("error"),
+                newLit(&"Field '{objName}.{apiName}' is marked as " &
+                  "'immut' for all paths and cannot be assigned to"))),
+            exported = params.exported
+          )
 
-        result.add mkProcDeclNode(
-          nnkAccQuoted.newTree(ident apiName, ident "="),
-            @[
-              ("self", objName, nvdVar),
-              ("it", fldType, nvdLet)
-            ],
-          impl = setImpl,
-          exported = params.exported
-        )
+        else:
+          let matched = ident "matched"
+          var resGets: seq[NimNode]
+          for (path, fld, immut) in resPaths:
+            let
+              fldId = ident fld.getInternalName()
+              onPath = self.onPath(path)
+
+            let immutAssert =
+              if immut:
+                newCall(
+                  "raiseAssert",
+                  newLit(
+                    &"Field '{objName}.{apiName} is " &
+                      "immutable for object kind"))
+                    # TODO print current object kind values
+              else:
+                newEmptyNode()
+
+            resGets.add quote do:
+              if `onPath`:
+                if true:
+                  `immutAssert`
+                `matched` = true
+                `self`.`fldId` = `it`
+
+          var setImpl = newStmtList(resGets)
+          setImpl.add quote do:
+            if not `matched`:
+              raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
+
+          result.add mkProcDeclNode(
+            nnkAccQuoted.newTree(ident apiName, ident "="),
+              @[
+                ("self", objName, nvdVar),
+                ("it", fldType, nvdLet)
+              ],
+            impl =
+              (
+                quote do:
+                var `matched`: bool = false
+                `setImpl`
+              )
+            ,
+            exported = params.exported
+          )
 
   # block:
   #   for apiName, fldType in sameNames:
-
-
-
 
   # block: # getter proc `field()`
   #   for name, fldType in sameNames:

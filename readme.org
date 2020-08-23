@@ -98,7 +98,7 @@ Annotate fields with ~{.check(<bool expression>).} that will run each
 time you set a value to a field. If assertion fails ~ValidationError~
 is raised.
 
-#+begin_src nim
+#+begin_src nim :exports both
   import strutils
   derive commonDerives:
     type
@@ -120,6 +120,74 @@ Two constants are accessible in the ~check~ expression:
 - ~self~ current object
 
 ** Implementing custom traits
+
+Macro ~derive~ accepts static parameter: ~DeriveConf~ which contain
+list all callbacks for building proc declarations.
+
+#+begin_src nim :exports both
+  import nimtraits, macros
+  import hmisc/types/hnim_ast
+
+  func makeEchoImpl(obj: var Object, params: DeriveParams): NimNode =
+    let
+      self = ident "self" # name of the object for case statement.
+      impl = self.eachCase(obj) do(fld: TraitField) -> NimNode:
+        # Iterate each field in object and execute callbac for it.
+        let
+          fldName = newLit fld.getApiName()
+          # To avoid collision betteen different traits that might
+          # modify field names it is necessary to use `getApiName` -
+          # to get public field name
+          fldId = ident fld.getInternalName()
+          # `getInternalName` returns actual name of the field in
+          # object
+        quote do:
+          echo "Field '", `fldName`, "' has value ", `self`.`fldId`
+
+    # Result of trait implementation callback can be anyting - in
+    # this case it is a procedure declaration. Helper proc builder
+    # from `hmisc/types/hnim_ast` is used.
+    result = (ident "echoAll").mkProcDeclNode(
+      { "self" : obj.name },
+      impl,
+      exported = false
+    )
+
+    debugecho $!result
+
+  const deriveConf = DeriveConf( # Create custom set of trait
+                                 # configurations
+    traits: @[
+      TraitConf(
+        name: "EchoFields", # <-----------------+
+        implCb: makeEchoImpl)])    #            |
+                                   #            |
+  derive deriveConf: # Use it in derive macro   |________
+    type        #__________ annotate type with `EchoFields`
+      A {.derive(EchoFields).} = object
+        case bbb: bool
+        of true:
+          zzz: int
+        else:
+          qqq: char
+
+  let test = A(bbb: false, qqq: 'e')
+  test.echoAll()
+#+end_src
+
+#+RESULTS:
+#+begin_example
+proc echoAll(self: A) =
+  echo "Field \'", "bbb", "\' has value ", self.bbb
+  case self.bbb
+  of true:
+    echo "Field \'", "zzz", "\' has value ", self.zzz
+  else:
+    echo "Field \'", "qqq", "\' has value ", self.qqq
+
+Field 'bbb' has value false
+Field 'qqq' has value e
+#+end_example
 
 
 * Contribution & development
