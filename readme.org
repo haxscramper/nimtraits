@@ -122,7 +122,23 @@ Two constants are accessible in the ~check~ expression:
 ** Implementing custom traits
 
 Macro ~derive~ accepts static parameter: ~DeriveConf~ which contain
-list all callbacks for building proc declarations.
+list all callbacks for building proc declarations. Each callback is a
+function with signature ~func(var Object, DeriveParams): NimNode~.
+First argument is a current representation of the object using [[https://haxscramper.github.io/hmisc-doc/src/hmisc/types/hnim_ast.html#Object][type]]
+from ~hmisc/types/hnim_ast~ and second one is a set of common
+configuration parameters.
+
+NOTE: ! object description is passed as *mutable* parameter - it means
+that particular trait implementation is allowed to change object
+structure. It is not possible to completely control changes, but for
+field renaming API is provided.
+
+- ~renameInternal~ - add ~impl_~ prefix to object, making field
+  internal. Subsequent renames do nothing, which means it can be used
+  as many times as necessary, by completely unrelated traits.
+- ~getInternalName~ - get actual name of the field in the object
+- ~getApiName~ - get name of the field as visible for 'external
+  users'.
 
 #+begin_src nim :exports both
   import nimtraits, macros
