@@ -1,6 +1,7 @@
-import sugar, strutils, sequtils, strformat
+import sugar, strutils, sequtils, strformat, hashes, tables
 import ../src/nimtraits
 import marshal
+import hmisc/helpers
 
 #===========================  implementation  ============================#
 
@@ -8,9 +9,28 @@ import marshal
 
 import unittest
 
+const conf = commonDerives.withIt do:
+  it.params.exported = false # disable export for unit testing
+
+
+# FIXME fails to compile when I put this in unit test
+derive commonDerives:
+  type
+    Hhhhh {.derive(Hash, Eq).} = object
+      f1: float
+      f3: int
+      case f5: bool
+        of false:
+          f2: char
+        else:
+          f4: float
+
+var hh: Table[Hhhhh, int]
+hh[Hhhhh(f3: 12)] = 1231
+
 suite "Nim traits":
   test "Derive get/set":
-    derive commonDerives:
+    derive conf:
       type
         Type {.derive(GetSet).} = object
           f1 {.name(field).}: int
@@ -20,7 +40,7 @@ suite "Nim traits":
     echo tt.field
 
   test "Derive eq":
-    derive commonDerives:
+    derive conf:
       type
         Type {.derive(Eq).} = object
           case kind: bool
@@ -32,7 +52,7 @@ suite "Nim traits":
     echo Type(kind: false) == Type(kind: true)
 
   test "Field validation":
-    derive commonDerives:
+    derive conf:
       type
         Type {.derive(Validate).} = object
           fld {.check(it.startsWith("hhh")).}: string
@@ -42,8 +62,6 @@ suite "Nim traits":
 
     expect ValidationError:
       t.fld = "####"
-
-    # t.fld = "123132"
 
   test "Serialization to JSON":
     type

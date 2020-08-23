@@ -12,14 +12,17 @@ type
   TraitObject* = Object[NimNode, NPragma]
   TraitField* = ObjectField[NimNode, NPragma]
 
+  DeriveParams* = object
+    exported*: bool
+
   DeriveConf* = object
     traits*: seq[TraitConf]
-    # commonMarkers*: seq[string]
+    params*: DeriveParams
 
   TraitConf* = object
     name*: string
     triggers*: seq[string]
-    implCb*: var TraitObject ~> NimNode
+    implCb*: (var TraitObject, DeriveParams) ~> NimNode
     overrides*: seq[string]
 
 func excl*(lhs: var seq[string], rhs: seq[string]) =
@@ -58,7 +61,7 @@ macro derive*(
                   if impl.name in deriveNames:
                     deriveNames.excl impl.overrides # XXXX no test for
                     # mutually excusive traits
-                    traitImpls.add impl.implCb(obj)
+                    traitImpls.add impl.implCb(obj, conf.params)
 
           let
             fldAnnots = conf.traits.mapIt(it.triggers).concat()
@@ -92,6 +95,7 @@ macro derive*(
               else:
                 pr = none(NPragma)
 
+          # echo $!obj.toNimNode()
           restypes.add obj.toNimNode()
         else:
           restypes.add obj
@@ -99,14 +103,14 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-  echo result.toStrLit()
+  # echo result.toStrLit()
 
 
 func toNimNode(str: string): NimNode = ident(str)
 
 #========================  GetSet implementation  ========================#
 
-func makeGetSetImpl*(obj: var Object): NimNode =
+func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   var setdecl: seq[NimNode]
   let name = obj.name
   obj.eachField do(fld: TraitField):
@@ -124,20 +128,23 @@ func makeGetSetImpl*(obj: var Object): NimNode =
             ],
           quote do:
             self.`fldId` = `fldId`
+
+          ,
+          exported = params.exported
         )
 
         # getter proc `field()`
         setdecl.add prName[1].mkProcDeclNode(
           fld.fldType, { "self" : name },
-          quote do:
-            self.`fldId`
+          newReturn(newDotExpr(ident "self", fldId)),
+          exported = params.exported
         )
 
   result = newStmtList(setdecl)
 
 #==========================  Eq implementation  ==========================#
 
-func makeEqImpl*(obj: var Object): NimNode =
+func makeEqImpl*(obj: var Object, params: DeriveParams): NimNode =
   let
     lhs = ident "lhs"
     rhs = ident "rhs"
@@ -156,7 +163,8 @@ func makeEqImpl*(obj: var Object): NimNode =
       quote do:
         `impl`
         return true
-    )
+    ),
+    exported = params.exported
   )
 
 #=======================  Validate implementation  =======================#
@@ -168,7 +176,7 @@ type
 # all fields and
 
 
-func makeValidateImpl*(obj: var Object): NimNode =
+func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
   ## NOTE all 'validated' fields will be made private and renamed
   ## (prefix `validated` will be added).
   var validators: seq[NimNode]
@@ -200,14 +208,17 @@ func makeValidateImpl*(obj: var Object): NimNode =
           when not defined(release): # XXXX
             `checks`
           self.`fldId` = it
+
+        ,
+        exported = params.exported
       )
 
 
       validators.add mkProcDeclNode(
         ident(fld.name), fld.fldType,
         { "self" : name },
-        quote do:
-          self.`fldId`
+        newReturn(newDotExpr(ident "self", fldId)),
+        exported = params.exported
       )
 
   let self = ident "self"
@@ -222,7 +233,10 @@ func makeValidateImpl*(obj: var Object): NimNode =
         `checks`
 
   validators.add ident("validate").mkProcDeclNode(
-    { "self" : obj.name }, total, mkNPragma("noSideEffect"))
+    { "self" : obj.name }, total,
+    pragma = mkNPragma("noSideEffect"),
+    exported = params.exported
+  )
 
 
   obj.eachFieldMut do(fld: var TraitField):
@@ -231,22 +245,47 @@ func makeValidateImpl*(obj: var Object): NimNode =
   result = newStmtList(validators)
 
 
+#=========================  Hash implementation  =========================#
+
+func makeHashImpl*(obj: var Object, params: DeriveParams): NimNode =
+  let self = ident "self"
+  let impl = eachCase(self, obj) do(fld: TraitField) -> NimNode:
+    let h = ident "h"
+    newAssignment(h,
+      newInfix(
+        "!&", `h`,
+        newCall(
+          "hash", newDotExpr(self, ident fld.name))))
+
+  result = (ident "hash").mkProcDeclNode(
+    mkNType("Hash"),
+    { "self" : obj.name },
+    newStmtList(
+      newVarStmt("h", mkNtype("Hash"), newLit(0)),
+      impl,
+      newReturn(newPrefix("!$", ident "h"))
+    ),
+    mkNPragma("noSideEffect"),
+    exported = params.exported
+  )
+
+  # debugecho $!result
 
 #=======================  Default implementation  ========================#
 
-func makeDefaultImpl*(obj: var Object): NimNode =
+func makeDefaultImpl*(obj: var Object, params: DeriveParams): NimNode =
   discard
 
 
 #=======================  JsonRepr implementation  =======================#
 
-func makeJsonReprImpl*(obj: var Object): NimNode =
+func makeJsonReprImpl*(obj: var Object, params: DeriveParams): NimNode =
   discard
 
 
 #=======================  XmlRepr implementation  ========================#
 
-func makeXmlReprImpl*(obj: var Object): NimNode =
+func makeXmlReprImpl*(obj: var Object, params: DeriveParams): NimNode =
   discard
 
 
@@ -269,6 +308,11 @@ const commonDerives* = DeriveConf(
       name: "Eq",
       triggers: @[],
       implCb: makeEqImpl
+    ),
+    TraitConf(
+      name: "Hash",
+      triggers: @[],
+      implCb: makeHashImpl
     ),
     TraitConf(
       name: "Default",
