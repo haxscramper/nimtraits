@@ -117,21 +117,39 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
     if fld.annotation.isSome():
       iflet (prName = fld.annotation.get().getElem("name")):
         assertNodeKind(prName[1], {nnkIdent})
-        let fldId = ident fld.name
+        let
+          fldId = ident fld.name
+          objName = $name
 
-        # setter proc `field=`
-        setdecl.add mkProcDeclNode(
-          nnkAccQuoted.newTree(prName[1], ident "="),
-            @[
-              ("self", name, nvdVar),
-              (fld.name, fld.fldType, nvdLet)
-            ],
-          quote do:
-            self.`fldId` = `fldId`
-
-          ,
-          exported = params.exported
-        )
+        if fld.markedAs("immut"):
+          # setter proc `field=`
+          setdecl.add mkProcDeclNode(
+            nnkAccQuoted.newTree(prName[1], ident "="),
+              @[
+                ("self", name, nvdVar),
+                (fld.name, fld.fldType, nvdLet)
+              ],
+            newEmptyNode(),
+            pragma = mkNPragma(
+              nnkExprColonExpr.newTree(
+                ident("error"),
+                newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
+                  "'const' and cannot be assigned to"))),
+            exported = params.exported
+          )
+        else:
+          # setter proc `field=`
+          setdecl.add mkProcDeclNode(
+            nnkAccQuoted.newTree(prName[1], ident "="),
+              @[
+                ("self", name, nvdVar),
+                (fld.name, fld.fldType, nvdLet)
+              ],
+            quote do:
+              self.`fldId` = `fldId`
+            ,
+            exported = params.exported
+          )
 
         # getter proc `field()`
         setdecl.add prName[1].mkProcDeclNode(
@@ -141,6 +159,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
         )
 
   result = newStmtList(setdecl)
+  debugecho $!result
 
 #==========================  Eq implementation  ==========================#
 
@@ -269,8 +288,6 @@ func makeHashImpl*(obj: var Object, params: DeriveParams): NimNode =
     exported = params.exported
   )
 
-  # debugecho $!result
-
 #=======================  Default implementation  ========================#
 
 func makeDefaultImpl*(obj: var Object, params: DeriveParams): NimNode =
@@ -295,7 +312,7 @@ const commonDerives* = DeriveConf(
   traits: @[
     TraitConf(
       name: "GetSet",
-      triggers: @["name"],
+      triggers: @["name", "immut"],
       implCb: makeGetSetImpl,
     ),
     TraitConf(

@@ -30,14 +30,26 @@ hh[Hhhhh(f3: 12)] = 1231
 
 suite "Nim traits":
   test "Derive get/set":
-    derive conf:
-      type
-        Type {.derive(GetSet).} = object
-          f1 {.name(field).}: int
+    block: # Getter/setter
+      derive conf:
+        type
+          Type {.derive(GetSet).} = object
+            f1 {.name(field).}: int
 
-    var tt: Type
-    tt.field = 12
-    echo tt.field
+      var tt: Type
+      tt.field = 12
+      echo tt.field
+
+    block: # const field
+      derive conf:
+        type Type {.derive(GetSet).} = object
+          f2 {.name(field), immut.}: int
+
+      var tt: Type
+      echo tt.field
+      when false: # NOTE compilation error test
+        tt.field = 12312
+
 
   test "Derive eq":
     derive conf:
