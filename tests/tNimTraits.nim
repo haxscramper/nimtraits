@@ -2,7 +2,7 @@ import sugar, strutils, sequtils, strformat, hashes, tables, macros
 import ../src/nimtraits
 import marshal
 import hmisc/helpers
-import hmisc/types/hnim_ast
+import hnimast
 
 #===========================  implementation  ============================#
 

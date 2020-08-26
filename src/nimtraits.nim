@@ -1,7 +1,7 @@
-import hmisc/types/hnim_ast
+import hnimast, hnimast/obj_field_macros
 import hmisc/hexceptions
 import hmisc/algo/halgorithm
-import hmisc/macros/[obj_field_macros, iflet]
+import hmisc/macros/iflet
 import hpprint
 import macros, strformat, options, sequtils, sugar, strutils, tables
 
@@ -139,7 +139,7 @@ func toNimNode(str: string): NimNode = ident(str)
 
 func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   let objName = obj.name
-  var sameNames: Table[string, NType]
+  var sameNames: Table[string, NType[NimNode]]
 
   block: # generate list of fields with the same public name; store
          # their types
