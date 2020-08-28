@@ -70,8 +70,9 @@ macro derive*(
     section.assertNodeKind {nnkTypeSection}
     var restypes: seq[NimNode]
     for obj in section:
-      case obj.kind:
-        of nnkTypeDef:
+      assertNodeKind(obj, {nnkTypeDef})
+      case obj[2].kind:
+        of nnkObjectTy:
           var obj: TraitObject = parseObject(obj, parseNimPragma)
           if obj.annotation.isSome():
             for annot in obj.annotation.get().elements:
@@ -152,6 +153,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
           # TODO better error message
           assert fld.fldType == sameNames[fname]
 
+        fld.exported = false
         fld.renameInternal()
 
   let
@@ -163,13 +165,19 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   block:
     for apiName, fldType in sameNames:
       # Iterate over all pats; find all that can return result
-      var resPaths: seq[tuple[path: NPath[NPragma], fld: TraitField, immut: bool]]
+      var resPaths: seq[tuple[
+        path: NPath[NPragma],
+        fld: TraitField,
+        immut: bool]] = @[]
+
       discard self.eachPath(obj) do(
         path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
         for fld in flds:
           if fld.getApiName() == apiName:
+            # debugecho fld.getInternalName(), " is named as ", fld.getApiName()
             resPaths.add (path, fld, fld.markedAs("immut"))
 
+      # debugecho resPaths.len, " fields have the same api name ", apiName
       block: # getter builder
         # for each possible path generate 'isOnPath' predicate
         var resGets: seq[NimNode]
@@ -210,7 +218,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
                 ident("error"),
                 newLit(&"Field '{objName}.{apiName}' is marked as " &
                   "'immut' for all paths and cannot be assigned to"))),
-            exported = params.exported
+            exported = true
           )
 
         else:
@@ -257,7 +265,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
                 `setImpl`
               )
             ,
-            exported = params.exported
+            exported = true
           )
 
   # block:
