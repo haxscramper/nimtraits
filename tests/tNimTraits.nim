@@ -135,7 +135,7 @@ suite "Nim traits":
       # Result of trait implementation callback can be anyting - in
       # this case it is a procedure declaration. Helper proc builder
       # from `hmisc/types/hnim_ast` is used.
-      result = (ident "echoAll").mkProcDeclNode(
+      result = (ident "echoAll").newProcDeclNode(
         { "self" : obj.name },
         impl,
         exported = false

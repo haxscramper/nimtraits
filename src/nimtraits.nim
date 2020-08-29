@@ -194,7 +194,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
           raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
 
 
-        result.add (ident apiName).mkProcDeclNode(
+        result.add (ident apiName).newProcDeclNode(
           fldType, { "self" : objName },
           getImpl,
           exported = params.exported
@@ -206,19 +206,19 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
         #   # setter proc `field=`
 
         if resPaths.allOfIt(it.immut):
-          result.add mkProcDeclNode(
+          result.add newProcDeclNode(
             nnkAccQuoted.newTree(ident apiName, ident "="),
               @[
                 ("self", objName, nvdVar),
                 ("it", fldType, nvdLet)
               ],
             newEmptyNode(),
-            pragma = mkNPragma(
+            pragma = newNPragma(
               nnkExprColonExpr.newTree(
                 ident("error"),
                 newLit(&"Field '{objName}.{apiName}' is marked as " &
                   "'immut' for all paths and cannot be assigned to"))),
-            exported = true
+            exported = params.exported
           )
 
         else:
@@ -252,7 +252,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
             if not `matched`:
               raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
 
-          result.add mkProcDeclNode(
+          result.add newProcDeclNode(
             nnkAccQuoted.newTree(ident apiName, ident "="),
               @[
                 ("self", objName, nvdVar),
@@ -265,7 +265,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
                 `setImpl`
               )
             ,
-            exported = true
+            exported = params.exported
           )
 
   # block:
@@ -291,7 +291,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
 
   #       getFld
 
-  #     result.add (ident name).mkProcDeclNode(
+  #     result.add (ident name).newProcDeclNode(
   #       fldType, { "self" : objName },
   #       getImpl,
   #       exported = params.exported
@@ -314,7 +314,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   #         result = newCall(ident "raiseAssert",
   #                          newLit("#[ IMPLEMENT:ERRMSG ]#"))
 
-  #     result.add mkProcDeclNode(
+  #     result.add newProcDeclNode(
   #       nnkAccQuoted.newTree(ident name, ident "="),
   #         @[
   #           ("self", objName, nvdVar),
@@ -328,14 +328,14 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
 
         # if fld.markedAs("immut"):
         #   # setter proc `field=`
-        #   setdecl.add mkProcDeclNode(
+        #   setdecl.add newProcDeclNode(
         #     nnkAccQuoted.newTree(prName[1], ident "="),
         #       @[
         #         ("self", name, nvdVar),
         #         (fld.name, fld.fldType, nvdLet)
         #       ],
         #     newEmptyNode(),
-        #     pragma = mkNPragma(
+        #     pragma = newNPragma(
         #       nnkExprColonExpr.newTree(
         #         ident("error"),
         #         newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
@@ -355,14 +355,14 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
 
   #       if fld.markedAs("immut"):
   #         # setter proc `field=`
-  #         setdecl.add mkProcDeclNode(
+  #         setdecl.add newProcDeclNode(
   #           nnkAccQuoted.newTree(prName[1], ident "="),
   #             @[
   #               ("self", name, nvdVar),
   #               (fld.name, fld.fldType, nvdLet)
   #             ],
   #           newEmptyNode(),
-  #           pragma = mkNPragma(
+  #           pragma = newNPragma(
   #             nnkExprColonExpr.newTree(
   #               ident("error"),
   #               newLit(&"Field '{objName}.{prName[1].strVal()}' is marked as " &
@@ -371,7 +371,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   #         )
   #       else:
   #         # setter proc `field=`
-  #         setdecl.add mkProcDeclNode(
+  #         setdecl.add newProcDeclNode(
   #           nnkAccQuoted.newTree(prName[1], ident "="),
   #             @[
   #               ("self", name, nvdVar),
@@ -384,7 +384,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
   #         )
 
   #       # getter proc `field()`
-  #       setdecl.add prName[1].mkProcDeclNode(
+  #       setdecl.add prName[1].newProcDeclNode(
   #         fld.fldType, { "self" : name },
   #         newReturn(newDotExpr(ident "self", fldId)),
   #         exported = params.exported
@@ -404,10 +404,10 @@ func makeEqImpl*(obj: var Object, params: DeriveParams): NimNode =
         if `lhs`.`fld` != `rhs`.`fld`:
           return false
 
-  result = [ident "=="].mkProcDeclNode(
-    mkNType("bool"),
+  result = [ident "=="].newProcDeclNode(
+    newNType("bool"),
     { "lhs" : obj.name, "rhs" : obj.name },
-    pragma = mkNPragma("noSideEffect"),
+    pragma = newNPragma("noSideEffect"),
     impl = (
       quote do:
         `impl`
@@ -452,7 +452,7 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
       fld.renameInternal()
       let fldId = ident fld.getInternalName()
 
-      validators.add newAccQuoted(fld.getAPIname(), "=").mkProcDeclNode(
+      validators.add newAccQuoted(fld.getAPIname(), "=").newProcDeclNode(
         [ ("self", name, nvdVar), ("it", fld.fldType, nvdLet) ],
         quote do:
           when not defined(release): # XXXX
@@ -464,7 +464,7 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
       )
 
 
-      validators.add mkProcDeclNode(
+      validators.add newProcDeclNode(
         ident(fld.getAPIname()), fld.fldType,
         { "self" : name },
         newReturn(newDotExpr(ident "self", fldId)),
@@ -482,9 +482,9 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
         let it {.inject.} = `self`.`fldId`
         `checks`
 
-  validators.add ident("validate").mkProcDeclNode(
+  validators.add ident("validate").newProcDeclNode(
     { "self" : obj.name }, total,
-    pragma = mkNPragma("noSideEffect"),
+    pragma = newNPragma("noSideEffect"),
     exported = params.exported
   )
 
@@ -505,15 +505,15 @@ func makeHashImpl*(obj: var Object, params: DeriveParams): NimNode =
         newCall(
           "hash", newDotExpr(self, ident fld.name))))
 
-  result = (ident "hash").mkProcDeclNode(
-    mkNType("Hash"),
+  result = (ident "hash").newProcDeclNode(
+    newNType("Hash"),
     { "self" : obj.name },
     newStmtList(
-      newVarStmt("h", mkNtype("Hash"), newLit(0)),
+      newVarStmt("h", newNtype("Hash"), newLit(0)),
       impl,
       newReturn(newPrefix("!$", ident "h"))
     ),
-    mkNPragma("noSideEffect"),
+    newNPragma("noSideEffect"),
     exported = params.exported
   )
 
@@ -538,6 +538,9 @@ func makeXmlReprImpl*(obj: var Object, params: DeriveParams): NimNode =
 #====================  Default set of trait builders  ====================#
 
 const commonDerives* = DeriveConf(
+  params: DeriveParams(
+    exported: true
+  ),
   traits: @[
     TraitConf(
       name: "GetSet",

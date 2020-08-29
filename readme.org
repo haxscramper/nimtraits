@@ -211,3 +211,17 @@ Field 'qqq' has value e
 This is a proof-of-concept library - any input on API design,
 questions and suggestions about implementation are more than welcome.
 My [[https://discord.gg/hjfYJCU][discord server]].
+
+TODO
+
+- [ ] automatically add object documentation with explanation for all
+  changes made to object. *require* trait implementation callbacks to
+  document their actions. Might use some kind of simple template
+  (based on strtabs & simple string interpolation) to make
+  documentation. It will be a little verbose, yes, but better than
+  looking at object in documentation and figuring out all transformations.
+- [ ] Add original object declaration in the documentation too? It
+  will retain all /semantic/ information about derive annotations:
+  e.g. you can actually see the original intention.
+- [ ] Generate both mutable and immutable getters to allow using
+  fields like ~obj.fld[2] = "value"~
