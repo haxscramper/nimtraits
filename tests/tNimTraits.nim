@@ -162,6 +162,37 @@ suite "Nim traits":
     let test = A()
     test.echoAll()
 
+  test "Declare init":
+    func makeInitImpl(obj: var Object, params: DeriveParams): NimNode =
+      let
+        self = ident "self"
+        impl = self.eachCase(obj) do(fld: TraitField) -> NimNode:
+          if fld.value.isSome():
+            let val = fld.value.get()
+            let fld = ident fld.getInternalName()
+            let res = ident "result"
+            return quote do:
+              `res`.`fld` = `val`
+
+      let init = ident("init" & obj.name.head)
+      let name = ident(obj.name.head)
+      result = quote do:
+        proc `init`(): `name` =
+          `impl`
+
+    const deriveConf = DeriveConf(
+      traits: @[TraitConf(name: "Init", implCb: makeInitImpl)])
+
+    derive deriveConf:
+      type
+        A {.derive(Init).} = object
+          hello: int = 12
+
+    let val = initA()
+    echo val
+
+
+
 suite "Nim traits combinations":
   derive conf:
     type
