@@ -116,7 +116,7 @@ suite "Nim traits":
       t.fld = "####"
 
   test "Custom trait implementation":
-    func makeEchoImpl(obj: var Object, params: DeriveParams): NimNode =
+    func makeEchoImpl(obj: var TraitObject, params: DeriveParams): NimNode =
       let
         self = ident "self" # name of the object for case statement.
         impl = self.eachCase(obj) do(fld: TraitField) -> NimNode:
@@ -163,7 +163,7 @@ suite "Nim traits":
     test.echoAll()
 
   test "Declare init":
-    func makeInitImpl(obj: var Object, params: DeriveParams): NimNode =
+    func makeInitImpl(obj: var TraitObject, params: DeriveParams): NimNode =
       let
         self = ident "self"
         impl = self.eachCase(obj) do(fld: TraitField) -> NimNode:

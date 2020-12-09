@@ -10,7 +10,7 @@ import macros, strformat, options, sequtils, sugar, strutils, tables
 #      transformations.
 
 type
-  TraitObject* = Object[NimNode, NPragma]
+  TraitObject* = ObjectDecl[NimNode, NPragma]
   TraitField* = ObjectField[NimNode, NPragma]
 
   DeriveParams* = object
@@ -138,7 +138,7 @@ func toNimNode(str: string): NimNode = ident(str)
 
 #========================  GetSet implementation  ========================#
 
-func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   let objName = obj.name
   var sameNames: Table[string, NType[NimNode]]
 
@@ -166,12 +166,12 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
     for apiName, fldType in sameNames:
       # Iterate over all pats; find all that can return result
       var resPaths: seq[tuple[
-        path: NPath[NPragma],
+        path: NObjectPath[NPragma],
         fld: TraitField,
         immut: bool]] = @[]
 
       discard self.eachPath(obj) do(
-        path: NPath[NPragma], flds: seq[TraitField]) -> NimNode:
+        path: NObjectPath[NPragma], flds: seq[TraitField]) -> NimNode:
         for fld in flds:
           if fld.getApiName() == apiName:
             # debugecho fld.getInternalName(), " is named as ", fld.getApiName()
@@ -393,7 +393,7 @@ func makeGetSetImpl*(obj: var Object, params: DeriveParams): NimNode =
 
 #==========================  Eq implementation  ==========================#
 
-func makeEqImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeEqImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   let
     lhs = ident "lhs"
     rhs = ident "rhs"
@@ -425,7 +425,7 @@ type
 # all fields and
 
 
-func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeValidateImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   ## NOTE all 'validated' fields will be made private and renamed
   ## (prefix `validated` will be added).
   var validators: seq[NimNode]
@@ -472,7 +472,7 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
       )
 
   let self = ident "self"
-  let total = self.eachCase(obj) do(fld: NField[NPragma]) -> NimNode:
+  let total = self.eachCase(obj) do(fld: NObjectField[NPragma]) -> NimNode:
     iflet (check = fld.annotation.getElem("check")):
       let
         checks = check.getChecks(fld)
@@ -495,7 +495,7 @@ func makeValidateImpl*(obj: var Object, params: DeriveParams): NimNode =
 
 #=========================  Hash implementation  =========================#
 
-func makeHashImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeHashImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   let self = ident "self"
   let impl = eachCase(self, obj) do(fld: TraitField) -> NimNode:
     let h = ident "h"
@@ -519,19 +519,19 @@ func makeHashImpl*(obj: var Object, params: DeriveParams): NimNode =
 
 #=======================  Default implementation  ========================#
 
-func makeDefaultImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeDefaultImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   discard
 
 
 #=======================  JsonRepr implementation  =======================#
 
-func makeJsonReprImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeJsonReprImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   discard
 
 
 #=======================  XmlRepr implementation  ========================#
 
-func makeXmlReprImpl*(obj: var Object, params: DeriveParams): NimNode =
+func makeXmlReprImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   discard
 
 
