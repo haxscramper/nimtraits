@@ -32,6 +32,17 @@ var hh: Table[Hhhhh, int]
 hh[Hhhhh(f3: 12)] = 1231
 
 suite "Nim traits":
+  test "Store defaults":
+    type Def {.storeDefaults.} = object
+      fld1: int = 10
+
+
+    initDefaultInitImpl("Def", false)
+
+    doAssert initDef().fld1 == 10
+    doAssert initDef(11).fld1 == 11
+
+
   test "{GetSet} Two fields with the same API name":
     derive conf:
       type GetSetSameName {.derive(GetSet).} = object

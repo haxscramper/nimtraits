@@ -6,7 +6,7 @@ import hmisc/macros/iflet
 {.push warning[UnusedImport]:off.}
 
 import hpprint
-import macros, strformat, options, sequtils, sugar, strutils, tables
+import std/[macros, strformat, options, sequtils, sugar, strutils, tables]
 
 # TODO support trait implementation builder debuggging - because callbacks
 #      can modifty object definition it is necessary to keep track of all
@@ -62,6 +62,15 @@ func asInternal*(fld: TraitField): string =
 #   fld.markedAs("check")
 
 #========================  derive implementation  ========================#
+
+var defaultMap {.compiletime.}: Table[string, TraitObject]
+
+macro storeDefaults*(obj: untyped): untyped =
+  # echo treeRepr(obj)
+  let parsed: TraitObject = parseObject(obj, parseNimPragma)
+  pprint parsed
+  defaultMap[parsed.name.head] = parsed
+  result = parsed.toNNode()
 
 macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
@@ -576,6 +585,27 @@ macro initEqImpl*(T: typed): untyped =
 
 macro initHashImpl*(T: typed): untyped =
   parseObject(T, parseNimPragma).makeHashImplBody(DeriveParams())
+
+macro initDefaultInitImpl*(
+  typeName: string, doExport: static[bool] = true):
+  untyped =
+
+  let parsed = defaultMap[typeName.strVal()]
+
+  var pr = newNProcDecl("init" & typeName.strVal())
+
+  pr.exported = doExport
+  pr.returnType = parsed.name
+
+  var impl = nnkObjConstr.newTree(ident parsed.name.head)
+
+  for fld in iterateFields(parsed):
+    pr.addArgument(fld.name, fld.fldType, value = fld.value)
+    impl.add nnkExprColonExpr.newTree(ident fld.name, ident fld.name)
+
+  pr.impl = impl
+
+  result = pr.toNNode()
 
 const commonDerives* = DeriveConf(
   params: DeriveParams(
