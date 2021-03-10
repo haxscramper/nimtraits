@@ -68,7 +68,6 @@ var defaultMap {.compiletime.}: Table[string, TraitObject]
 macro storeDefaults*(obj: untyped): untyped =
   # echo treeRepr(obj)
   let parsed: TraitObject = parseObject(obj, parseNimPragma)
-  pprint parsed
   defaultMap[parsed.name.head] = parsed
   result = parsed.toNNode()
 
@@ -587,12 +586,12 @@ macro initHashImpl*(T: typed): untyped =
   parseObject(T, parseNimPragma).makeHashImplBody(DeriveParams())
 
 macro initDefaultInitImpl*(
-  typeName: string, doExport: static[bool] = true):
+  typeName: static[string], doExport: static[bool] = true):
   untyped =
 
-  let parsed = defaultMap[typeName.strVal()]
+  let parsed = defaultMap[typeName]
 
-  var pr = newNProcDecl("init" & typeName.strVal())
+  var pr = newNProcDecl("init" & typeName)
 
   pr.exported = doExport
   pr.returnType = parsed.name
@@ -606,6 +605,50 @@ macro initDefaultInitImpl*(
   pr.impl = impl
 
   result = pr.toNNode()
+
+proc initPositionalInitImpl*[T: enum](
+  kindValue: T,
+  typeName: static[string], arglist: seq[NimNode]):
+  NimNode =
+
+  let res = genSym(nskVar, "res")
+  result = eachStaticPath(
+    ident("kind"),
+    defaultMap[typeName],
+    proc(flds: seq[TraitField]): NimNode =
+      result = newStmtList()
+      for i in 0 .. max(flds.high, arglist.high):
+        var val: NimNode
+        if i <= flds.high and i <= arglist.high:
+          val = arglist[i]
+
+        elif arglist.high < i and i <= flds.high:
+          if flds[i].value.isSome():
+            val = flds[i].value.get()
+
+        elif flds.high < i and i <= argList.high:
+          raiseImplementError("")
+
+        if not isNil(val):
+          result.add nnkAsgn.newTree(
+            nnkDotExpr.newTree(res, ident flds[i].name),
+            val
+          )
+  )
+
+  let kindName = ident($typeof(kindValue))
+  let typeName = ident(typeName)
+  let kindValue = newLit(kindValue)
+
+  result = quote do:
+    block:
+      const kind {.inject.} = `kindValue`
+      var `res` = `typeName`(kind: kind)
+      `result`
+      `res`
+
+
+
 
 const commonDerives* = DeriveConf(
   params: DeriveParams(

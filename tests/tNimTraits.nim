@@ -32,6 +32,45 @@ var hh: Table[Hhhhh, int]
 hh[Hhhhh(f3: 12)] = 1231
 
 suite "Nim traits":
+  test "Positional init":
+    type
+      HLStackOpKind = enum
+        hsoLoad
+        hsoCallFunc
+        hsoForIter
+        hsoJump
+        hsoIfNotJump
+        hsoPopTop
+        hsoGetIter
+        hsoStoreName
+        hsoLoadName
+
+      HLStackOp {.storeDefaults.} = object
+        case kind*: HLStackOpKind
+          of hsoLoad:
+            value*: string
+
+          of hsoCallFunc:
+            argc*: int
+
+          of hsoForIter, hsoJump, hsoIfNotJump:
+            jumpOffset*: int
+
+          of hsoStoreName, hsoLoadName:
+            varName*: string
+
+          else:
+            discard
+
+        annotation*: string
+
+    macro op(kind: static[HLStackOpKind], args: varargs[untyped]):
+      untyped =
+      result = initPositionalInitImpl(kind, "HLStackOp", toSeq(args))
+
+    doAssert hsoJump.op(10).jumpOffset == 10
+    let opImpl = hsoLoadName.op("test")
+
   test "Store defaults":
     type Def {.storeDefaults.} = object
       fld1: int = 10
