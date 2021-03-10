@@ -1,3 +1,5 @@
+{.push warning[UnusedImport]:off.}
+
 import sugar, strutils, sequtils, strformat, hashes, tables, macros
 import ../src/nimtraits
 import marshal
@@ -44,7 +46,7 @@ suite "Nim traits":
     var tt = GetSetSameName(ch: 'e')
 
     tt.goodName = 12
-    assert tt.goodName == 12
+    doAssert tt.goodName == 12
 
   test "{GetSet}; Getter/setter - change field API name":
     derive conf:
@@ -54,7 +56,7 @@ suite "Nim traits":
 
     var tt: Type1
     tt.field = 12
-    assert tt.field == 12
+    doAssert tt.field == 12
 
   test "{GetSet}; fully const field":
     derive conf:
@@ -89,7 +91,7 @@ suite "Nim traits":
           fld1 {.name(field).}: int
 
     var tt = Type(kind: true)
-    assert tt.field == 0
+    doAssert tt.field == 0
 
   test "{Eq}; Simple use case":
     derive conf:
@@ -101,7 +103,9 @@ suite "Nim traits":
             of false:
               b: float
 
-    assert Type(kind: false) != Type(kind: true)
+    doAssert Type(kind: false) != Type(kind: true)
+
+    func customEq(lhs, rhs: Type): bool = initEqImpl(Type)
 
   test "Field validation":
     derive conf:
@@ -205,7 +209,7 @@ suite "Nim traits combinations":
 
   var t: Test
 
-  assert Test() == Test()
+  doAssert Test() == Test()
 
   expect ValidationError:
     t.sfld = "1039285701394875091843750984231570234897"

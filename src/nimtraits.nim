@@ -2,6 +2,9 @@ import hnimast, hnimast/obj_field_macros
 import hmisc/hexceptions
 import hmisc/algo/halgorithm
 import hmisc/macros/iflet
+
+{.push warning[UnusedImport]:off.}
+
 import hpprint
 import macros, strformat, options, sequtils, sugar, strutils, tables
 
@@ -106,6 +109,7 @@ macro derive*(
                   for elem in elems:
                     if elem.kind == nnkCall and elem[0] == ident("derive"):
                       discard # drop `{.derive(...).}`
+
                     else:
                       pass.add elem
                 else:
@@ -113,8 +117,10 @@ macro derive*(
                     let k = elem.kind
                     if k == nnkIdent and elem.strVal() in fldAnnots:
                       discard # drop `{.<trait-name>.}`
+
                     elif k == nnkCall and elem[0].strVal() in fldAnnots:
                       discard # drop `{.<trait>(.. <args> ..)}`
+
                     else:
                       pass.add elem
 
@@ -125,6 +131,7 @@ macro derive*(
 
           # echo $!obj.toNimNode()
           restypes.add obj.toNimNode()
+
         else:
           restypes.add obj
 
@@ -194,11 +201,11 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
           raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
 
 
-        result.add (ident apiName).newProcDeclNode(
-          fldType, { "self" : objName },
-          getImpl,
-          exported = params.exported
-        )
+        result.add toNNode newNProcDecl(apiName).withIt do:
+          it.returnType = fldType
+          it.addArgument("self", objName)
+          it.impl = getImpl
+          it.exported = params.exported
 
       block: # setter builder
         # for each possible path generate 'isOnPath' predicate
@@ -206,20 +213,19 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
         #   # setter proc `field=`
 
         if resPaths.allOfIt(it.immut):
-          result.add newProcDeclNode(
-            nnkAccQuoted.newTree(ident apiName, ident "="),
-              @[
-                ("self", objName, nvdVar),
-                ("it", fldType, nvdLet)
-              ],
-            newEmptyNode(),
-            pragma = newNPragma(
+          result.add toNNode newNProcDecl(apiName).withIt do:
+            it.kind = pkAssgn
+            it.exported = params.exported
+            it.addARgument({
+              "self": newNType("var", [objName]),
+              "it": fldType
+            })
+
+            it.pragma = newNPragma(
               nnkExprColonExpr.newTree(
                 ident("error"),
                 newLit(&"Field '{objName}.{apiName}' is marked as " &
-                  "'immut' for all paths and cannot be assigned to"))),
-            exported = params.exported
-          )
+                  "'immut' for all paths and cannot be assigned to")))
 
         else:
           let matched = ident "matched"
@@ -252,21 +258,30 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
             if not `matched`:
               raiseAssert("#[ IMPLEMENT:ERRMSG ]#")
 
-          result.add newProcDeclNode(
-            nnkAccQuoted.newTree(ident apiName, ident "="),
-              @[
-                ("self", objName, nvdVar),
-                ("it", fldType, nvdLet)
-              ],
-            impl =
-              (
-                quote do:
-                var `matched`: bool = false
-                `setImpl`
-              )
-            ,
-            exported = params.exported
-          )
+          result.add toNNode newNProcDecl(apiName).withIt do:
+            it.kind = pkAssgn
+            it.exported = params.exported
+            it.addArgument({
+              "self": newNType("var", [objName]),
+              "it": fldType
+            })
+            it.impl = quote do:
+              var `matched`: bool = false
+              `setImpl`
+
+          # result.add newProcDeclNode(
+          #   nnkAccQuoted.newTree(ident , ident "="),
+          #     @[
+          #       ("self", objName, nvdVar),
+          #       ("it", fldType, nvdLet)
+          #     ],
+          #   impl =
+          #     (
+          #       quote do:
+          #     )
+          #   ,
+          #   exported = params.exported
+          # )
 
   # block:
   #   for apiName, fldType in sameNames:
@@ -393,28 +408,36 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
 
 #==========================  Eq implementation  ==========================#
 
-func makeEqImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
+func makeEqImplBody*(obj: TraitObject, params: DeriveParams): NimNode =
   let
     lhs = ident "lhs"
     rhs = ident "rhs"
+
   let impl = (lhs, rhs).eachParallelCase(obj) do(
     fld: TraitField) -> NimNode:
     let fld = ident fld.name
     quote do:
-        if `lhs`.`fld` != `rhs`.`fld`:
-          return false
+      if `lhs`.`fld` != `rhs`.`fld`:
+        return false
 
-  result = [ident "=="].newProcDeclNode(
-    newNType("bool"),
-    { "lhs" : obj.name, "rhs" : obj.name },
-    pragma = newNPragma("noSideEffect"),
-    impl = (
-      quote do:
-        `impl`
-        return true
-    ),
-    exported = params.exported
-  )
+  return impl
+
+
+
+func makeEqImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
+  let impl = makeEqImplBody(obj, params)
+
+  result = toNNode newNProcDecl("==").withIt do:
+    it.returnType = newNType("bool")
+    it.addARgument({ "lhs" : obj.name, "rhs" : obj.name })
+    it.pragma = newNPragma("noSideEffect")
+    it.kind = pkOperator
+
+    it.impl = quote do:
+      `impl`
+      return true
+
+    it.exported = params.exported
 
 #=======================  Validate implementation  =======================#
 
@@ -452,24 +475,34 @@ func makeValidateImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
       fld.renameInternal()
       let fldId = ident fld.getInternalName()
 
-      validators.add newAccQuoted(fld.getAPIname(), "=").newProcDeclNode(
-        [ ("self", name, nvdVar), ("it", fld.fldType, nvdLet) ],
-        quote do:
+      validators.add toNNode newNProcDecl(fld.getApiName()).withIt do:
+        it.kind = pkAssgn
+        it.addArgument({
+          "self": newNType("var", [name]),
+          "it": fld.fldType
+        })
+
+        it.exported = params.exported
+        let itName = ident("it")
+        it.impl = quote do:
           when not defined(release): # XXXX
             `checks`
-          self.`fldId` = it
-
-        ,
-        exported = params.exported
-      )
+          self.`fldId` = `itName`
 
 
-      validators.add newProcDeclNode(
-        ident(fld.getAPIname()), fld.fldType,
-        { "self" : name },
-        newReturn(newDotExpr(ident "self", fldId)),
-        exported = params.exported
-      )
+      # validators.add newAccQuoted(fld.getAPIname(), "=").newProcDeclNode(
+      #   [ ("self", name, nvdVar), ("it", fld.fldType, nvdLet) ],
+      #   quote do:
+      #   ,
+      #   exported = params.exported
+      # )
+
+
+      validators.add toNNode newNProcDecl(fld.getApiName()).withIt do:
+        it.returnType = fld.fldType
+        it.addArgument("self", name)
+        it.exported = params.exported
+        it.impl = newReturn(newDotExpr(ident "self", fldId))
 
   let self = ident "self"
   let total = self.eachCase(obj) do(fld: NObjectField[NPragma]) -> NimNode:
@@ -482,20 +515,18 @@ func makeValidateImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
         let it {.inject.} = `self`.`fldId`
         `checks`
 
-  validators.add ident("validate").newProcDeclNode(
-    { "self" : obj.name }, total,
-    pragma = newNPragma("noSideEffect"),
-    exported = params.exported
-  )
-
+  validators.add toNNode newNProcDecl("validate").withIt do:
+    it.addArgument("self", obj.name)
+    it.impl = total
+    it.pragma = newNPragma("noSideEffect")
+    it.exported = params.exported
 
   result = newStmtList(validators)
-  # debugecho $!result
 
 
 #=========================  Hash implementation  =========================#
 
-func makeHashImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
+func makeHashImplBody*(obj: TraitObject, params: DeriveParams): NimNode =
   let self = ident "self"
   let impl = eachCase(self, obj) do(fld: TraitField) -> NimNode:
     let h = ident "h"
@@ -505,17 +536,20 @@ func makeHashImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
         newCall(
           "hash", newDotExpr(self, ident fld.name))))
 
-  result = (ident "hash").newProcDeclNode(
-    newNType("Hash"),
-    { "self" : obj.name },
-    newStmtList(
-      newVarStmt("h", newNtype("Hash"), newLit(0)),
-      impl,
-      newReturn(newPrefix("!$", ident "h"))
-    ),
-    newNPragma("noSideEffect"),
-    exported = params.exported
+  return newStmtList(
+    newVarStmt("h", newNtype("Hash"), newLit(0)),
+    impl,
+    newReturn(newPrefix("!$", ident "h"))
   )
+
+
+func makeHashImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
+  result = toNNode newNProcDecl("hash").withIt do:
+    it.returnType = newNType("Hash")
+    it.addArgument("self", obj.name)
+    it.impl = makeHashImplBody(obj, params)
+    it.pragma = newNPragma("noSideEffect")
+    it.exported = params.exported
 
 #=======================  Default implementation  ========================#
 
@@ -536,6 +570,12 @@ func makeXmlReprImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
 
 
 #====================  Default set of trait builders  ====================#
+
+macro initEqImpl*(T: typed): untyped =
+  parseObject(T, parseNimPragma).makeEqImplBody(DeriveParams())
+
+macro initHashImpl*(T: typed): untyped =
+  parseObject(T, parseNimPragma).makeHashImplBody(DeriveParams())
 
 const commonDerives* = DeriveConf(
   params: DeriveParams(

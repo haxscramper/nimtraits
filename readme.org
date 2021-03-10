@@ -225,3 +225,7 @@ TODO
   e.g. you can actually see the original intention.
 - [ ] Generate both mutable and immutable getters to allow using
   fields like ~obj.fld[2] = "value"~
+- [ ] Asigning from varargs and haskell-like object constructors. Create
+  discrimintant objects using ~initT <kind>(<args> ...)~ instead of
+  ~T(kind: <kind>, field: <field1>)~. Similar to aggregate initalization
+  from C++.
