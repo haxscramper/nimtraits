@@ -11,4 +11,4 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 1.4.4"
-requires "hmisc", "hpprint", "hnimast"
+requires "hmisc >= 0.10.7", "hpprint", "hnimast >= 0.3.20"
