@@ -5,6 +5,10 @@ import std/[strutils, strformat, sequtils]
 import hmisc/hdebug_misc
 import hnimast
 
+import fusion/matching
+
+{.experimental: "caseStmtMacros".}
+
 import std/parsexml
 
 proc enumPrefixForCamel*(camel: string): string =
@@ -34,6 +38,18 @@ proc addBranch*[N](main: var N, expr: N, body: varargs[N]) =
 
 proc addBranch*[N](main: var N, expr: enum, body: varargs[N]) =
   addBranch(main, newNIdent[N]($expr), body)
+
+proc newPLit*(e: enum): PNode =
+  proc enumToStr(x: enum): string {.magic: "EnumToStr", noSideEffect.}
+  return newPIdent(enumToStr(e))
+
+proc newPLit*[T](s: set[T]): PNode =
+  result = nnkCurly.newPTree()
+  for value in s:
+    result.add newPLit(value)
+
+proc addBranch*[N, E](main: var N, expr: set[E], body: varargs[N]) =
+  addBranch(main, newPLit(expr), body)
 
 proc newAsgn*[N](lhs, rhs: N): N = newNTree[N](nnkAsgn, lhs, rhs)
 proc toPNode*(node: PNode): PNode = node
@@ -73,7 +89,17 @@ type
     entry: XsdEntry
     ptype: PNType
     parserCall: string
-    wrapperKind: XsdWrapperKind
+    kind: XsdWrapperKind
+
+  XsdElementWrapperKind = enum
+    xewkSingleSequence
+    xewkUnboundedSequence
+
+  XsdElementWrapper = object
+    xsdEntry: XsdEntry
+    elements: seq[XsdType]
+    kind: XsdElementWrapperKind
+
 
 proc typeForEntry(xsd): XsdType =
   var (ptype, parserCall) = case xsd.xsdType:
@@ -117,29 +143,24 @@ proc typeForEntry(xsd): XsdType =
 
   return XsdType(
     ptype: ptype, parserCall: parserCall,
-    wrapperKind: wrapperKind, entry: xsd
+    kind: wrapperKind, entry: xsd
   )
 
-proc wrappedType(xsdType: XsdType): PNtype =
-  case xsdType.wrapperKind:
-    of xwkSequence:
+proc wrappedType(
+    xsdType: XsdType,
+    wrapperKind: XsdElementWrapperKind = xewkSingleSequence
+  ): PNtype =
+
+  # echov xsdType.ptype
+  case wrapperKind:
+    of xewkUnboundedSequence:
       newPType("seq", [xsdType.ptype])
 
-    of xwkOption:
-      newPType("Option", [xsdType.ptype])
-
-    of xwkScalar:
-      xsdType.ptype
-
-type
-  XsdElementWrapperKind = enum
-    xewkSingleSequence
-    xewkUnboundedSequence
-
-  XsdElementWrapper = object
-    xsdEntry: XsdEntry
-    elements: seq[XsdType]
-    kind: XsdElementWrapperKind
+    of xewkSingleSequence:
+      case xsdType.kind:
+        of xwkSequence: newPType("seq", [xsdType.ptype])
+        of xwkOption:   newPType("Option", [xsdType.ptype])
+        of xwkScalar:   xsdType.ptype
 
 proc typeForWrapper(xsd): XsdElementWrapper =
   var elements: seq[XsdType]
@@ -196,15 +217,37 @@ proc enumFieldName(str: string, prefix: string): string =
   result = res
 
 
+proc addParseForType(
+    target: PNode, input: XsdType,
+    wrapperKind: XsdElementWrapperKind
+  ): PNode =
 
-proc generateForObject(xsd): tuple[decl: PObjectDecl, parser: PProcDecl] =
-  result.decl = newPObjectDecl(xsd.name.fixTypeName())
+  let parserCall = newPCall(input.parserCall, newPIdent("parser"))
+
+  if wrapperKind == xewkUnboundedSequence or
+     input.kind == xwkSequence:
+    return newPCall("add", target, parserCall)
+
+  elif input.kind == xwkOption:
+    return newAsgn(target, newPCall("some", parserCall))
+
+  else:
+    return newAsgn(target, parserCall)
+
+proc newParseTargetPType(ptype: PNType): PNType =
+  result = newPType(ntkGenericSpec)
+  result.add newPType("var", [newPType("seq", [ptype])])
+  result.add newPType("var", [ptype])
+  result.add newPType("var", [newPType("Option", [ptype])])
+
+proc generateTypeForObject(xsd): PObjectDecl =
+  result = newPObjectDecl(xsd.name.fixTypeName())
   echo treeRepr(xsd)
   for entry in xsd:
     case entry.kind:
       of xekAttribute:
         if entry.hasName():
-          result.decl.addField(entry.name, typeForEntry(entry).wrappedType())
+          result.addField(entry.name, typeForEntry(entry).wrappedType())
 
         else:
           echov treeRepr(entry)
@@ -216,13 +259,15 @@ proc generateForObject(xsd): tuple[decl: PObjectDecl, parser: PProcDecl] =
         case wrapper.kind:
           of xewkSingleSequence:
             for element in wrapper.elements:
-              result.decl.addField(element.entry.name(), element.wrappedType())
+              result.addField(
+                element.entry.name(),
+                element.wrappedType(wrapper.kind))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
-              result.decl.addField(
+              result.addField(
                 wrapper.elements[0].entry.name(),
-                newPType("seq", [wrapper.elements[0].wrappedType()]))
+                wrapper.elements[0].wrappedType(wrapper.kind))
 
             else:
               raiseImplementError($wrapper.elements.len)
@@ -235,9 +280,17 @@ proc generateForObject(xsd): tuple[decl: PObjectDecl, parser: PProcDecl] =
       else:
         echov treeRepr(entry)
 
+proc generateParserForObject(xsd): PProcDecl =
+  let targetName = xsd.name.fixTypeName()
+  result = newPProcDecl("parse" & targetName)
+  result.addArgument("target", newParseTargetPType(
+    newPType(targetName)))
 
-  result.parser = newPProcDecl("parse" & result.decl.name.head)
-  result.parser.addArgument("parser", newPtype("var", ["XmlParser"]))
+  result.addArgument(
+    "parser",
+    newPtype("var", ["XmlParser"])
+  )
+
 
   let
     next = newPDotFieldExpr("parser", newPCall("next"))
@@ -263,13 +316,84 @@ proc generateForObject(xsd): tuple[decl: PObjectDecl, parser: PProcDecl] =
     next
   )
 
-  mainCase.addBranch(xmlElementOpen, newAsgn(inAttributes, newPLit(true)))
+  var bodyCase = newCase(newPDotFieldExpr(
+    "parser", newPCall("elementName")))
 
-  result.parser.impl = pquote do:
-    assert parser.elementName == `newPLit(xsd.name)`
-    var `inAttributes` = false
-    while true:
-      `mainCase`
+  proc addFieldBranch(
+      target: var PNode, field: XsdType,
+      wrapper: XsdElementWrapper
+    ) =
+
+    if field.entry.hasName() and field.entry.hasType():
+      let parseCall = newPCall(
+        field.parserCall,
+        newPDotFieldExpr("result", field.entry.name()),
+        newPIdent("parser")
+      )
+
+      target.addBranch(newPLit(field.entry.name()), parseCall)
+
+
+  for element in xsd:
+    if element.kind == xekSequence:
+      let wrapper = typeForWrapper(element)
+      case wrapper.kind:
+        of xewkSingleSequence:
+          for field in wrapper.elements:
+            addFieldBranch(bodyCase, field, wrapper)
+
+        of xewkUnboundedSequence:
+          if len(wrapper.elements) == 1:
+            addFieldBranch(bodyCase, wrapper.elements[0], wrapper)
+
+          else:
+            raiseImplementError("")
+
+
+  mainCase.addBranch(
+    {xmlElementOpen, xmlElementStart},
+    pquote do:
+      if parser.kind == xmlElementOpen:
+        `inAttributes` = true
+
+      `bodyCase`
+
+      `next`
+  )
+
+  mainCase.addBranch(xmlElementClose, next)
+  mainCase.addBranch(
+    xmlElementEnd,
+    pquote do:
+      if parser.elementName() == `xsd.name()`:
+        `next`
+        break
+
+      else:
+        # IMPLEMENT generate error
+        discard
+  )
+
+  let parseName = newPIdent(result.name)
+
+  result.impl = pquote do:
+    when target is seq:
+      while target.elementName == `newPLit(xsd.name)`:
+        var res: typeof(target[0])
+        `parsename`(res, parser)
+        add(target, res)
+
+    elif target is Option:
+      if parser.elementName == `newPLit(xsd.name)`:
+        var res: typeof(target.get())
+        `parseName`(res, parser)
+        target = some(res)
+
+    else:
+      assert parser.elementName == `newPLit(xsd.name)`
+      var `inAttributes` = false
+      while true:
+        `mainCase`
 
 
 proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
@@ -297,8 +421,10 @@ proc generateForXsd(xsd): seq[PNimDecl] =
         echo treeRepr(xsd)
 
     of xekComplexType:
-      let (decl, parser) = generateForObject(xsd)
-      return @[toNimDecl decl, toNimDecl parser]
+      return @[
+        toNimDecl generateTypeForObject(xsd),
+        toNimDecl generateParserForObject(xsd)
+      ]
 
 
     of xekGroupDeclare:
