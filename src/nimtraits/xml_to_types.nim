@@ -1,5 +1,5 @@
 import hmisc/hasts/[xml_ast, xsd_ast]
-import hmisc/other/oswrap
+import hmisc/other/[oswrap, hshell]
 import hmisc/algo/[halgorithm, hstring_algo, clformat]
 import std/[strutils, strformat, sequtils]
 import hmisc/hdebug_misc
@@ -69,6 +69,30 @@ proc newPDotFieldExpr*(lhs: string, rhs: PNode | string): PNode =
     result.add newPIdent(rhs)
 
 
+proc fixIdentName*(str: string, prefix: string): string =
+  if str in [
+
+    "addr", "and", "as", "asm", "bind", "block", "break", "case", "cast",
+    "concept", "const", "continue", "converter", "defer", "discard",
+    "distinct", "div", "do", "elif", "else", "end", "enum", "except",
+    "export", "finally", "for", "from", "func", "if", "import", "in",
+    "include", "interface", "is", "isnot", "iterator", "let", "macro",
+    "method", "mixin", "mod", "nil", "not", "notin", "object", "of", "or",
+    "out", "proc", "ptr", "raise", "ref", "return", "shl", "shr", "static",
+    "template", "try", "tuple", "type", "using", "var", "when", "while",
+    "xor", "yield",
+
+  ]:
+    assert prefix.len > 0
+    result = prefix & capitalizeAscii(str)
+
+  else:
+    result = str
+
+
+
+
+
 type PNType = NType[PNode]
 
 #*************************************************************************#
@@ -77,7 +101,12 @@ type PNType = NType[PNode]
 
 using xsd: XsdEntry
 
-func fixTypeName(str: string): string = capitalizeAscii(str)
+
+func fixTypeName(str: string): string = capitalizeAscii(str.fixIdentName("X"))
+proc identName*(xsd): string = xsd.name().fixIdentName("x")
+proc typeName*(xsd): string = xsd.xsdType().fixTypeName()
+proc parserName*(typeName: string): string =
+  "parse" & capitalizeAscii(typeName)
 
 type
   XsdWrapperKind = enum
@@ -247,7 +276,8 @@ proc generateTypeForObject(xsd): PObjectDecl =
     case entry.kind:
       of xekAttribute:
         if entry.hasName():
-          result.addField(entry.name, typeForEntry(entry).wrappedType())
+          result.addField(
+            entry.identName(), typeForEntry(entry).wrappedType())
 
         else:
           echov treeRepr(entry)
@@ -260,13 +290,13 @@ proc generateTypeForObject(xsd): PObjectDecl =
           of xewkSingleSequence:
             for element in wrapper.elements:
               result.addField(
-                element.entry.name(),
+                element.entry.identName(),
                 element.wrappedType(wrapper.kind))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
               result.addField(
-                wrapper.elements[0].entry.name(),
+                wrapper.elements[0].entry.identName(),
                 wrapper.elements[0].wrappedType(wrapper.kind))
 
             else:
@@ -327,7 +357,7 @@ proc generateParserForObject(xsd): PProcDecl =
     if field.entry.hasName() and field.entry.hasType():
       let parseCall = newPCall(
         field.parserCall,
-        newPDotFieldExpr("result", field.entry.name()),
+        newPDotFieldExpr("result", field.entry.identName()),
         newPIdent("parser")
       )
 
@@ -396,19 +426,50 @@ proc generateParserForObject(xsd): PProcDecl =
         `mainCase`
 
 
+
 proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
   result.decl = newPEnumDecl(xsd.name)
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
+  var mainCase = newCase(newPIdent("parser"))
+
+
   for field in enumerationFields(xsd):
+    let fieldName = enumFieldName(field.value, enumPrefix)
+    mainCase.addBranch(
+      newPLit(field.value),
+      newAsgn(newPident("arget"), newPIdent(fieldName))
+    )
+
     result.decl.addField(
-      enumFieldName(field.value, enumPrefix),
+      fieldName,
       docComment = &"XSD enumeration: `{field.value}`"
     )
 
   result.parser = newPProcDecl("parse" & result.decl.name)
 
+
+  result.parser.addArgument(
+    "target",
+    newParseTargetPType(newPType(result.decl.name)))
+
   result.parser.addArgument("parser", newPtype("var", ["XmlParser"]))
+
+  let parsename = newPIdent(result.parser.name)
+
+  result.parser.impl = pquote do:
+    when target is seq:
+      var res: typeof(target[0])
+      `parsename`(res, parser)
+      add(target, res)
+
+    elif target is Option:
+      var res: typeof(target.get())
+      `parseName`(res, parser)
+      target = some(res)
+
+    else:
+      `mainCase`
 
 proc generateForXsd(xsd): seq[PNimDecl] =
   case xsd.kind:
@@ -417,8 +478,39 @@ proc generateForXsd(xsd): seq[PNimDecl] =
         let (decl, parser) = generateForEnum(xsd)
         return @[toNimDecl decl, toNimDecl parser]
 
+      elif isPrimitiveRestriction(xsd):
+        let xsdType = xsd[0].typeForEntry()
+        let targetType = xsd.name().fixTypeName()
+        result.add toNimDecl newAliasDecl(targetType.newPType(), xsdType.ptype)
+
+        var parser = newPProcDecl(targetType.parserName())
+
+        parser.addArgument("target", newParseTargetPType(newPType(targetType)))
+        parser.addArgument("parser", newPType("var", ["XmlParser"]))
+
+        let
+          baseParseCall = newPCall(xsdType.parserCall)
+          parseCall = newPIdent(parser.name)
+
+
+        parser.impl = pquote do:
+          when target is seq:
+            var res: typeof(target[0])
+            `parseCall`(res, parser)
+            add(target, res)
+
+          elif target is Option:
+            var res: typeof(target.get())
+            `parseCall`(res, parser)
+            target = some(res)
+
+          else:
+            `baseParseCall`(target, parser)
+
+        result.add toNimDecl parser
+
       else:
-        echo treeRepr(xsd)
+        echov treeRepr(xsd)
 
     of xekComplexType:
       return @[
@@ -433,15 +525,37 @@ proc generateForXsd(xsd): seq[PNimDecl] =
     else:
       echov treeRepr(xsd)
 
+proc withoutImpl*[N](decl: ProcDecl[N]): ProcDecl[N] =
+  result = decl
+  result.impl = nil
+
 proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
   let document = parseXsd(xsd)
+  var procs: seq[PNimDecl]
+  var types: seq[PNimTypeDecl]
+  var forward: seq[PNimDecl]
   for entry in document.entry:
-    result.add generateForXsd(entry)
+    for generated in generateForXsd(entry):
+      if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
+        types.add toNimTypeDecl(generated)
+
+      elif generated.kind in {nekProcDecl}:
+        forward.add toNimDecl(generated.procDecl.withoutImpl())
+        procs.add generated
+
+      else:
+        procs.add generated
+
+  result.add toNimDecl(types)
+  result.add forward
+  result.add procs
 
 when isMainModule:
   startHax()
   let decls = generateForXsd(AbsFile "/tmp/schema.xsd")
 
-  "/tmp/res.nim".writeFile($decls)
+  "/tmp/res.nim".writeFile("import std/[options, parsexml, xmltree]\n" & $decls)
+  execShell shellCmd(nim, check, errorMax = 2, "/tmp/res.nim")
+  echo "done"
 
   # echo $decls
