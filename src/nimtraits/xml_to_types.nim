@@ -1,6 +1,6 @@
 import hmisc/hasts/[xml_ast, xsd_ast]
 import hmisc/other/[oswrap, hshell]
-import hmisc/algo/[halgorithm, hstring_algo, clformat]
+import hmisc/algo/[halgorithm, hstring_algo, clformat, hseq_mapping]
 import std/[strutils, strformat, sequtils]
 import hmisc/hdebug_misc
 import hnimast
@@ -330,7 +330,7 @@ proc generateParserForObject(xsd): PProcDecl =
 
   result.addArgument(
     "parser",
-    newPtype("var", ["XmlParser"])
+    newPtype("var", ["HXmlParser"])
   )
 
   result.addArgument("tag", newPType("string"))
@@ -359,7 +359,8 @@ proc generateParserForObject(xsd): PProcDecl =
       )
 
   attrCase.addBranch pquote do:
-    raiseUnexpectedAttribute(parser)
+    if not(startsWith(parser.attrKey(), ["xmlns:", "xsi:", "xml:"])):
+      raiseUnexpectedAttribute(parser)
 
   var mainCase = newCase(newPDotFieldExpr("parser", "kind"))
 
@@ -418,12 +419,35 @@ proc generateParserForObject(xsd): PProcDecl =
       `next`
   )
 
-  mainCase.addBranch({
+  var used = {
     xmlError, xmlEof, xmlCharData, xmlWhitespace,
     xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
-  },
-  pquote do:
-    echo parser.kind()
+  }
+
+  if xsd.findIt(it.kind == xekSequence) == 0:
+    let wrapper = typeForWrapper(xsd[0])
+
+    if wrapper.elements.len > 0:
+      let
+        first = wrapper.elements[0]
+        call = newPIdent(first.parserCall)
+        name = first.entry.identName().newPIdent()
+
+      used.excl xmlCharData
+      mainCase.addBranch(
+        xmlCharData,
+        pquote do:
+          `call`(target.`name`, parser, tag)
+      )
+
+    # else:
+    #   raiseImplementError(xsd.treeRepr())
+
+  mainCase.addBranch(
+    used,
+    pquote do:
+      echo parser.displayAt()
+      assert false
   )
 
   mainCase.addBranch(xmlElementClose, next)
@@ -455,7 +479,10 @@ proc generateParserForObject(xsd): PProcDecl =
         target = some(res)
 
     else:
-      assert parser.elementName == tag
+      if parser.elementName() != tag:
+        raiseUnexpectedElement(parser, tag)
+
+      next(parser)
       var `inAttributes` = false
       while true:
         `mainCase`
@@ -467,7 +494,7 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
   var mainCase = newCase(
-    newPDotFieldExpr("parser", "elementName"))
+    newPDotFieldExpr("parser", "strVal"))
 
 
   for field in enumerationFields(xsd):
@@ -489,7 +516,7 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
     "target",
     newParseTargetPType(newPType(result.decl.name)))
 
-  result.parser.addArgument("parser", newPtype("var", ["XmlParser"]))
+  result.parser.addArgument("parser", newPtype("var", ["HXmlParser"]))
   result.parser.addArgument("tag", newPType("string"))
 
   let parsename = newPIdent(result.parser.name)
@@ -523,7 +550,7 @@ proc generateForXsd(xsd): seq[PNimDecl] =
         var parser = newPProcDecl(targetType.parserName())
 
         parser.addArgument("target", newParseTargetPType(newPType(targetType)))
-        parser.addArgument("parser", newPType("var", ["XmlParser"]))
+        parser.addArgument("parser", newPType("var", ["HXmlParser"]))
         parser.addArgument("tag", newPType("string"))
 
         let
@@ -598,9 +625,11 @@ when isMainModule:
 
   "/tmp/res.nim".writeFile(
     """
-import std/[options, parsexml, xmltree]
+import std/[options]
 import hmisc/hasts/[xml_ast]
-export options, parsexml, xmltree, xml_ast
+export options, xml_ast
+
+import hmisc/algo/halgorithm
 
 """ & $decls
   )
@@ -611,7 +640,7 @@ export options, parsexml, xmltree, xml_ast
     """
 import res
 
-var parser = newXmlParser(AbsFile "/tmp/in.xml")
+var parser = newHXmlParser(AbsFile "/tmp/in.xml", true)
 
 var doxygen: DoxygenType
 parseDoxygenType(doxygen, parser, "doxygen")
@@ -620,9 +649,6 @@ parseDoxygenType(doxygen, parser, "doxygen")
 """
   )
 
-  execShell shellCmd(
-    nim, check, errorMax = 2,
-    "/tmp/parse.nim"
-  )
+  execShell shellCmd(nim, r, "/tmp/parse.nim")
 
   echo "done"
