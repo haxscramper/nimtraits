@@ -29,15 +29,22 @@ proc enumerationFields*(xsd: XsdEntry): seq[XsdEntry] =
 proc addBranch*[N](main: var N, expr: N, body: varargs[N]) =
   case main.kind.toNNK():
     of nnkCaseStmt:
-      main.add newNTree[N](
-        nnkOfBranch, expr,
-        newNTree[N](nnkStmtList, newEmptyNNode[N]() & toSeq(body)))
+      if body.len == 0:
+        main.add newNTree[N](nnkElse, expr)
+
+      else:
+        main.add newNTree[N](
+          nnkOfBranch, expr,
+          newNTree[N](nnkStmtList, newEmptyNNode[N]() & toSeq(body)))
 
     else:
       raiseImplementKindError(main)
 
 proc addBranch*[N](main: var N, expr: enum, body: varargs[N]) =
   addBranch(main, newNIdent[N]($expr), body)
+
+# proc addBranch*[N](main: var N, body: N) =
+#   case main.kind.toNNK():
 
 proc newPLit*(e: enum): PNode =
   proc enumToStr(x: enum): string {.magic: "EnumToStr", noSideEffect.}
@@ -137,7 +144,7 @@ proc typeForEntry(xsd): XsdType =
     of xsd"decimal":      (newPType ("float"),    "parseXsdDecimal")
     of xsd"integer":      (newPType ("int"),      "parseXsdInteger")
     of xsd"float":        (newPType ("float"),    "parseXsdFloat")
-    of xsd"double":       (newPType ("double"),   "parseXsdDouble")
+    of xsd"double":       (newPType ("float"),    "parseXsdDouble")
     of xsd"duration":     (newPType ("Duration"), "parseXsdDuration")
     of xsd"dateTime":     (newPType ("DateTime"), "parseXsdDateTime")
     of xsd"time":         (newPType ("DateTime"), "parseXsdTime")
@@ -149,7 +156,7 @@ proc typeForEntry(xsd): XsdType =
     of xsd"gMonth":       (newPType ("DateTime"), "parseXsdGMonth")
     # QUESTION - not sure what would be the best representation for this
     # type of content.
-    of xsd"hexBinary":    (newPType ("string"), "")
+    of xsd"hexBinary":    (newPType ("string"), "parseXsdHexBinary")
     of xsd"base64Binary": (newPType ("string"), "parseXsdBase64Binary")
     of xsd"anyURI":       (newPType ("URI"), "parseXsdUri")
     of xsd"QName":        (newPType ("???"), "parseXsdQName")
@@ -265,9 +272,14 @@ proc addParseForType(
 
 proc newParseTargetPType(ptype: PNType): PNType =
   result = newPType(ntkGenericSpec)
-  result.add newPType("var", [newPType("seq", [ptype])])
-  result.add newPType("var", [ptype])
-  result.add newPType("var", [newPType("Option", [ptype])])
+  result.add newPType("seq", [ptype])
+  result.add ptype
+  result.add newPType("Option", [ptype])
+  result = newPType("var", [result])
+
+  # result.add newPType("var", [])
+  # result.add newPType("var", [ptype])
+  # result.add newPType("var", [newPType("Option", [ptype])])
 
 proc generateTypeForObject(xsd): PObjectDecl =
   result = newPObjectDecl(xsd.name.fixTypeName())
@@ -312,7 +324,7 @@ proc generateTypeForObject(xsd): PObjectDecl =
 
 proc generateParserForObject(xsd): PProcDecl =
   let targetName = xsd.name.fixTypeName()
-  result = newPProcDecl("parse" & targetName)
+  result = newPProcDecl("parse" & targetName, iinfo = currIInfo())
   result.addArgument("target", newParseTargetPType(
     newPType(targetName)))
 
@@ -320,6 +332,8 @@ proc generateParserForObject(xsd): PProcDecl =
     "parser",
     newPtype("var", ["XmlParser"])
   )
+
+  result.addArgument("tag", newPType("string"))
 
 
   let
@@ -332,11 +346,20 @@ proc generateParserForObject(xsd): PProcDecl =
     if attr.hasName() and attr.hasType():
       attrCase.addBranch(
         newPLit(attr.name),
-        newAsgn(
-          newPDotFieldExpr("result", attr.name),
-          newPCall("parse" & attr.xsdType, newPident("parser"))
+        # newAsgn(
+        #   newPDotFieldExpr("target", attr.name),
+        #   newPCall("parse" & attr.xsdType, newPident("parser"))
+        # )
+        newPCall(
+          attr.typeForEntry().parserCall,
+          newPDotFieldExpr("target", attr.identName()),
+          newPIdent("parser"),
+          newPLit(attr.name)
         )
       )
+
+  attrCase.addBranch pquote do:
+    raiseUnexpectedAttribute(parser)
 
   var mainCase = newCase(newPDotFieldExpr("parser", "kind"))
 
@@ -357,8 +380,9 @@ proc generateParserForObject(xsd): PProcDecl =
     if field.entry.hasName() and field.entry.hasType():
       let parseCall = newPCall(
         field.parserCall,
-        newPDotFieldExpr("result", field.entry.identName()),
-        newPIdent("parser")
+        newPDotFieldExpr("target", field.entry.identName()),
+        newPIdent("parser"),
+        field.entry.name().newPLit()
       )
 
       target.addBranch(newPLit(field.entry.name()), parseCall)
@@ -380,6 +404,9 @@ proc generateParserForObject(xsd): PProcDecl =
             raiseImplementError("")
 
 
+  bodyCase.addBranch pquote do:
+    raiseUnexpectedElement(parser)
+
   mainCase.addBranch(
     {xmlElementOpen, xmlElementStart},
     pquote do:
@@ -395,7 +422,7 @@ proc generateParserForObject(xsd): PProcDecl =
   mainCase.addBranch(
     xmlElementEnd,
     pquote do:
-      if parser.elementName() == `xsd.name()`:
+      if parser.elementName() == tag:
         `next`
         break
 
@@ -408,19 +435,19 @@ proc generateParserForObject(xsd): PProcDecl =
 
   result.impl = pquote do:
     when target is seq:
-      while target.elementName == `newPLit(xsd.name)`:
+      while parser.elementName == tag:
         var res: typeof(target[0])
-        `parsename`(res, parser)
+        `parsename`(res, parser, tag)
         add(target, res)
 
     elif target is Option:
-      if parser.elementName == `newPLit(xsd.name)`:
+      if parser.elementName == tag:
         var res: typeof(target.get())
-        `parseName`(res, parser)
+        `parseName`(res, parser, tag)
         target = some(res)
 
     else:
-      assert parser.elementName == `newPLit(xsd.name)`
+      assert parser.elementName == tag
       var `inAttributes` = false
       while true:
         `mainCase`
@@ -431,14 +458,15 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
   result.decl = newPEnumDecl(xsd.name)
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
-  var mainCase = newCase(newPIdent("parser"))
+  var mainCase = newCase(
+    newPDotFieldExpr("parser", "elementName"))
 
 
   for field in enumerationFields(xsd):
     let fieldName = enumFieldName(field.value, enumPrefix)
     mainCase.addBranch(
       newPLit(field.value),
-      newAsgn(newPident("arget"), newPIdent(fieldName))
+      newAsgn(newPident("target"), newPIdent(fieldName))
     )
 
     result.decl.addField(
@@ -454,18 +482,19 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
     newParseTargetPType(newPType(result.decl.name)))
 
   result.parser.addArgument("parser", newPtype("var", ["XmlParser"]))
+  result.parser.addArgument("tag", newPType("string"))
 
   let parsename = newPIdent(result.parser.name)
 
   result.parser.impl = pquote do:
     when target is seq:
       var res: typeof(target[0])
-      `parsename`(res, parser)
+      `parsename`(res, parser, tag)
       add(target, res)
 
     elif target is Option:
       var res: typeof(target.get())
-      `parseName`(res, parser)
+      `parseName`(res, parser, tag)
       target = some(res)
 
     else:
@@ -487,25 +516,30 @@ proc generateForXsd(xsd): seq[PNimDecl] =
 
         parser.addArgument("target", newParseTargetPType(newPType(targetType)))
         parser.addArgument("parser", newPType("var", ["XmlParser"]))
+        parser.addArgument("tag", newPType("string"))
 
         let
-          baseParseCall = newPCall(xsdType.parserCall)
+          baseParseCall = newPIdent(xsdType.parserCall)
           parseCall = newPIdent(parser.name)
+          baseType = xsdType.ptype.toNNode()
+          newType = newPIdent(targetType)
 
 
         parser.impl = pquote do:
           when target is seq:
             var res: typeof(target[0])
-            `parseCall`(res, parser)
+            `parseCall`(res, parser, tag)
             add(target, res)
 
           elif target is Option:
             var res: typeof(target.get())
-            `parseCall`(res, parser)
+            `parseCall`(res, parser, tag)
             target = some(res)
 
           else:
-            `baseParseCall`(target, parser)
+            var tmp: `baseType`
+            `baseParseCall`(tmp, parser)
+            target = `newType`(tmp)
 
         result.add toNimDecl parser
 
@@ -554,8 +588,33 @@ when isMainModule:
   startHax()
   let decls = generateForXsd(AbsFile "/tmp/schema.xsd")
 
-  "/tmp/res.nim".writeFile("import std/[options, parsexml, xmltree]\n" & $decls)
-  execShell shellCmd(nim, check, errorMax = 2, "/tmp/res.nim")
-  echo "done"
+  "/tmp/res.nim".writeFile(
+    """
+import std/[options, parsexml, xmltree]
+import hmisc/hasts/[xml_ast]
+export options, parsexml, xmltree, xml_ast
 
-  # echo $decls
+""" & $decls
+  )
+
+  execShell shellCmd(nim, check, errorMax = 2, "/tmp/res.nim")
+
+  "/tmp/parse.nim".writeFile(
+    """
+import res
+
+var parser = newXmlParser(AbsFile "/tmp/in.xml")
+
+var doxygen: DoxygenType
+parseDoxygenType(doxygen, parser, "doxygen")
+
+
+"""
+  )
+
+  execShell shellCmd(
+    nim, check, errorMax = 2,
+    "/tmp/parse.nim"
+  )
+
+  echo "done"
