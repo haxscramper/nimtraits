@@ -418,6 +418,14 @@ proc generateParserForObject(xsd): PProcDecl =
       `next`
   )
 
+  mainCase.addBranch({
+    xmlError, xmlEof, xmlCharData, xmlWhitespace,
+    xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
+  },
+  pquote do:
+    echo parser.kind()
+  )
+
   mainCase.addBranch(xmlElementClose, next)
   mainCase.addBranch(
     xmlElementEnd,
