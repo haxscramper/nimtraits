@@ -117,7 +117,9 @@ proc identName*(xsd): string =
   else:
     xsd.name().fixIdentName("x")
 
-proc typeName*(xsd): string = xsd.xsdType().fixTypeName()
+proc typeName*(xsd): string = xsd.getType().fixTypeName()
+proc kindTypeName*(xsd): string = xsd.getType() & "Kind"
+proc bodyTypeName*(xsd): string = xsd.getType() & "Body"
 proc parserName*(typeName: string): string =
   "parse" & capitalizeAscii(typeName)
 
@@ -137,6 +139,8 @@ type
   XsdElementWrapperKind = enum
     xewkSingleSequence
     xewkUnboundedSequence
+    xewkUnboundedChoice
+    xewkSingleChoice
 
   XsdElementWrapper = object
     xsdEntry: XsdEntry
@@ -146,7 +150,7 @@ type
 
 proc typeForEntry(xsd): XsdType =
   var isPrimitive = true
-  var (ptype, parserCall) = case xsd.xsdType:
+  var (ptype, parserCall) = case xsd.getType:
     of xsd"string":       (newPType ("string"),   "parseXsdString")
     of xsd"boolean":      (newPType ("bool"),     "parseXsdBoolean")
     of xsd"decimal":      (newPType ("float"),    "parseXsdDecimal")
@@ -171,12 +175,12 @@ proc typeForEntry(xsd): XsdType =
     of xsd"anyType":      (newPType ("XmlNode"), "parseXsdAnyType")
     else:
       isPrimitive = false
-      if xsd.xsdType.startsWith("xsd:"):
-        raiseImplementError(xsd.xsdType)
+      if xsd.getType().startsWith("xsd:"):
+        raiseImplementError(xsd.getType)
 
       else:
-        (newPType(xsd.xsdType.fixTypeName()),
-         "parse" & fixTypeName(xsd.xsdType))
+        (newPType(xsd.getType.fixTypeName()),
+         "parse" & fixTypeName(xsd.getType))
 
   var wrapperKind: XsdWrapperKind
   if xsd.isOptional():
@@ -194,7 +198,8 @@ proc typeForEntry(xsd): XsdType =
 
 proc wrappedType(
     xsdType: XsdType,
-    wrapperKind: XsdElementWrapperKind = xewkSingleSequence
+    parent: XsdEntry,
+    wrapperKind: XsdElementWrapperKind = xewkSingleSequence,
   ): PNtype =
 
   case wrapperKind:
@@ -206,6 +211,12 @@ proc wrappedType(
         of xwkSequence: newPType("seq", [xsdType.ptype])
         of xwkOption:   newPType("Option", [xsdType.ptype])
         of xwkScalar:   xsdType.ptype
+
+    of xewkUnboundedChoice:
+      newPType("seq", [newPType(parent.bodyTypeName())])
+
+    of xewkSingleChoice:
+      newPType(parent.bodyTypeName())
 
 proc typeForWrapper(xsd): XsdElementWrapper =
   var elements: seq[XsdType]
@@ -309,7 +320,8 @@ proc generateTypeForObject(xsd): PObjectDecl =
   for attr in xsd.getAttributes():
     if attr.hasName():
       result.addField(
-        attr.identName(), attr.typeForEntry().wrappedType())
+        attr.identName(),
+        attr.typeForEntry().wrappedType(xsd))
 
 
   if isPrimitiveExtension(xsd):
@@ -332,13 +344,13 @@ proc generateTypeForObject(xsd): PObjectDecl =
             for element in wrapper.elements:
               result.addField(
                 element.entry.identName(),
-                element.wrappedType(wrapper.kind))
+                element.wrappedType(xsd, wrapper.kind))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
               result.addField(
                 wrapper.elements[0].entry.identName(),
-                wrapper.elements[0].wrappedType(wrapper.kind))
+                wrapper.elements[0].wrappedType(xsd, wrapper.kind))
 
             else:
               raiseImplementError($wrapper.elements.len)
@@ -370,11 +382,6 @@ proc generateParserForObject(xsd): PProcDecl =
 
 
   var attrCase = newCase(newPDotFieldExpr("parser", "attrKey"))
-  if xsd.hasName() and xsd.name() == "incType":
-    echo xsd.treeRepr()
-    for attr in xsd.getAttributes():
-      echov attr.treeRepr()
-
   for attr in xsd.getAttributes():
     if attr.hasName() and attr.hasType():
       attrCase.addBranch(
@@ -429,7 +436,7 @@ proc generateParserForObject(xsd): PProcDecl =
 
 
   for element in xsd:
-    if element.kind == xekSequence:
+    if element.kind in {xekSequence, xekChoice}:
       let wrapper = typeForWrapper(element)
       case wrapper.kind:
         of xewkSingleSequence:
@@ -442,6 +449,9 @@ proc generateParserForObject(xsd): PProcDecl =
 
           else:
             raiseImplementError("")
+
+        else:
+          raiseImplementError("")
 
 
   bodyCase.addBranch pquote do:
@@ -485,9 +495,7 @@ proc generateParserForObject(xsd): PProcDecl =
     #   raiseImplementError(xsd.treeRepr())
 
   if isPrimitiveExtension(xsd):
-    echov treeRepr(xsd, indexed = true)
     let extension = xsd.getExtensionSection()
-    echov treeRepr(extension)
     let target = extension.typeForEntry().
       parserForType({xmlCharData}, skipWrapperElement = false)
 
@@ -659,7 +667,7 @@ proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
   var procs: seq[PNimDecl]
   var types: seq[PNimTypeDecl]
   var forward: seq[PNimDecl]
-  for entry in document.entry:
+  for entry in document:
     for generated in generateForXsd(entry):
       if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
         types.add toNimTypeDecl(generated)
@@ -697,7 +705,7 @@ import hmisc/algo/halgorithm
 import res
 import hmisc/hexceptions
 
-var parser = newHXmlParser(AbsFile "/tmp/in.xml", true)
+var parser = newHXmlParser(AbsFile "/tmp/in.xml")
 
 var doxygen: DoxygenType
 
