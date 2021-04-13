@@ -40,8 +40,18 @@ proc addBranch*[N](main: var N, expr: N, body: varargs[N]) =
     else:
       raiseImplementKindError(main)
 
+proc newNLit*[N, T](item: T): N =
+  when N is NimNode:
+    newLit(item)
+
+  else:
+    newPLit(item)
+
 proc addBranch*[N](main: var N, expr: enum, body: varargs[N]) =
   addBranch(main, newNIdent[N]($expr), body)
+
+proc addBranch*[N](main: var N, expr: string, body: varargs[N]) =
+  addBranch(main, newNLit[N, string]($expr), body)
 
 # proc addBranch*[N](main: var N, body: N) =
 #   case main.kind.toNNK():
@@ -61,19 +71,29 @@ proc addBranch*[N, E](main: var N, expr: set[E], body: varargs[N]) =
 proc newAsgn*[N](lhs, rhs: N): N = newNTree[N](nnkAsgn, lhs, rhs)
 proc toPNode*(node: PNode): PNode = node
 proc toPNode*(val: string): PNode = newPLit(val)
-proc newCase*[N](expr: N): N =
+proc newCaseStmt*[N](expr: N): N =
   newNTree[N](nnkCaseStmt, expr)
 
 proc newPDotExpr*(lhs, rhs: PNode | string): PNode =
   newPTree(nnkDotExpr, toPNode(lhs), toPNode(rhs))
 
-proc newPDotFieldExpr*(lhs: string, rhs: PNode | string): PNode =
-  result = newPTree(nnkDotExpr, newPident(lhs))
+proc newPDotFieldExpr*(lhs, rhs: PNode | string): PNode =
+  result = newPTree(
+    nnkDotExpr, (when lhs is PNode: lhs else: newPident(lhs)))
+
   when rhs is PNode:
     result.add rhs
 
   else:
     result.add newPIdent(rhs)
+
+proc newPDotCall*(
+    main: string | PNode, callName: string,
+    args: varargs[PNode]
+  ): PNode =
+
+  var call = newPCall(callName, args)
+  result = newPTree(nnkDotExpr, toPNode(main), call)
 
 
 proc fixIdentName*(str: string, prefix: string): string =
@@ -118,10 +138,17 @@ proc identName*(xsd): string =
     xsd.name().fixIdentName("x")
 
 proc typeName*(xsd): string = xsd.getType().fixTypeName()
-proc kindTypeName*(xsd): string = xsd.getType() & "Kind"
-proc bodyTypeName*(xsd): string = xsd.getType() & "Body"
+proc kindTypeName*(xsd): string = xsd.typeName() & "Kind"
+proc bodyTypeName*(xsd): string = xsd.typeName() & "Body"
 proc parserName*(typeName: string): string =
   "parse" & capitalizeAscii(typeName)
+
+proc kindEnumName*(name: string; parent: XsdEntry): string =
+  parent.typeName().
+    filterIt(it in {'A' .. 'Z'}).join().toLowerAscii() &
+    name.capitalizeAscii()
+
+
 
 type
   XsdWrapperKind = enum
@@ -143,9 +170,17 @@ type
     xewkSingleChoice
 
   XsdElementWrapper = object
-    xsdEntry: XsdEntry
-    elements: seq[XsdType]
-    kind: XsdElementWrapperKind
+    case kind*: XsdElementWrapperKind
+      of xewkSingleSequence, xewkUnboundedSequence:
+        xsdEntry: XsdEntry
+        elements: seq[XsdType]
+
+      of xewkUnboundedChoice, xewkSingleChoice:
+        choiceEntry: XsdEntry
+        alternatives: seq[XsdType]
+        parent: XsdEntry
+
+
 
 
 proc typeForEntry(xsd): XsdType =
@@ -218,9 +253,8 @@ proc wrappedType(
     of xewkSingleChoice:
       newPType(parent.bodyTypeName())
 
-proc typeForWrapper(xsd): XsdElementWrapper =
+proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
   var elements: seq[XsdType]
-
   for element in xsd:
     case element.kind:
       of xekElement:
@@ -234,33 +268,40 @@ proc typeForWrapper(xsd): XsdElementWrapper =
         # echov element.kind
         discard
 
-
-
   var kind: XsdElementWrapperKind
   case xsd.kind:
     of xekSequence:
-      # echov xsd.xsdMaxOccurs.isSome()
-      # echov xsd.xsdMaxOccurs.isSome()
-
       if xsd.isFinite():
         kind = xewkSingleSequence
 
       else:
         kind = xewkUnboundedSequence
 
+      result = XsdElementWrapper(kind: kind)
+      result.xsdEntry = xsd
+      result.elements = elements
+
+    of xekChoice:
+      if xsd.isFinite():
+        kind = xewkSingleChoice
+
+      else:
+        kind = xewkUnboundedChoice
+
+      result = XsdElementWrapper(kind: kind)
+      result.choiceEntry = xsd
+      result.parent = parent
+      result.alternatives = elements
+
     else:
       discard
 
-  result.kind = kind
-  result.elements = elements
-  result.xsdEntry = xsd
-
-  # case xsd.kind:
-  #   of xekSequence:
 
 proc parserForType(
     xsdType: XsdType, eventKinds: set[XmlEventKind],
-    inTag: string = "", skipWrapperElement: bool = true): PNode =
+    inTag: string = "", skipWrapperElement: bool = true,
+    isMixed: bool = false
+  ): PNode =
 
   result = newPCall(
     xsdType.parserCall,
@@ -278,6 +319,11 @@ proc parserForType(
 
   else:
     result.add newPLit(inTag)
+    result.add newPLit(isMixed)
+
+
+  # else:
+
 
 
 
@@ -306,26 +352,28 @@ proc newParseTargetPType(ptype: PNType): PNType =
   # result.add newPType("var", [ptype])
   # result.add newPType("var", [newPType("Option", [ptype])])
 
-proc generateTypeForObject(xsd): PObjectDecl =
-  result = newPObjectDecl(
-    xsd.name.fixTypeName(),
-    docComment =
-      xsd.treeRepr(colored = false) & &"""
+proc generateTypeForObject(xsd):
+  tuple[main: PObjectDecl, choice: Option[(PObjectDecl, PEnumDecl)]] =
 
-- is primitive restriction: {xsd.isPrimitiveRestriction()}
-- is primitive extension: {xsd.isPrimitiveExtension()}
-"""
+  result.main = newPObjectDecl(
+    xsd.typeName(),
+#     docComment =
+#       xsd.treeRepr(colored = false) & &"""
+
+# - is primitive restriction: {xsd.isPrimitiveRestriction()}
+# - is primitive extension: {xsd.isPrimitiveExtension()}
+# """
   )
 
   for attr in xsd.getAttributes():
     if attr.hasName():
-      result.addField(
+      result.main.addField(
         attr.identName(),
         attr.typeForEntry().wrappedType(xsd))
 
 
   if isPrimitiveExtension(xsd):
-    result.addField(
+    result.main.addField(
       "baseExt",
       xsd.getExtensionSection().typeForEntry().ptype
     )
@@ -335,25 +383,59 @@ proc generateTypeForObject(xsd): PObjectDecl =
       of xekAttribute:
         discard
 
-      of xekSequence:
-        let wrapper = typeForWrapper(entry)
+      of xekSequence, xekChoice:
+        let wrapper = typeForWrapper(entry, xsd)
         # echov wrapper.kind, treeRepr(wrapper.xsdEntry)
         # raiseImplementError("")
         case wrapper.kind:
           of xewkSingleSequence:
             for element in wrapper.elements:
-              result.addField(
+              result.main.addField(
                 element.entry.identName(),
                 element.wrappedType(xsd, wrapper.kind))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
-              result.addField(
+              result.main.addField(
                 wrapper.elements[0].entry.identName(),
                 wrapper.elements[0].wrappedType(xsd, wrapper.kind))
 
             else:
               raiseImplementError($wrapper.elements.len)
+
+          of xewkUnboundedChoice:
+            result.main.addField(
+              "xsdChoice",
+              XsdType().wrappedType(xsd, wrapper.kind))
+
+            var
+              genObject = newPObjectDecl(xsd.bodyTypeName())
+              genEnum = newPEnumDecl(xsd.kindTypeName())
+
+            var selector = newObjectCaseField(
+              "kind", newPType(xsd.kindTypeName()))
+
+            for alt in wrapper.alternatives:
+              let id = alt.entry.name().kindEnumName(xsd)
+              selector.addBranch(
+                id.newPIdent(),
+                newObjectField(alt.entry.identName(), alt.ptype))
+
+              genEnum.addField(id)
+
+            if xsd.isMixed():
+              let id = kindEnumName("mixedStr", xsd)
+              genEnum.addField(id)
+
+              selector.addBranch(
+                id.newPIdent(),
+                newObjectField("mixedStr", newPType("string")))
+
+            genObject.addField(selector)
+
+            result.choice = some((genObject, genEnum))
+
+
 
           else:
             raiseImplementKindError(wrapper)
@@ -374,6 +456,7 @@ proc generateParserForObject(xsd): PProcDecl =
   )
 
   result.addArgument("tag", newPType("string"))
+  result.addArgument("inMixed", newPType("bool"), value = some newPIdent("false"))
 
 
   let
@@ -381,7 +464,7 @@ proc generateParserForObject(xsd): PProcDecl =
     inAttributes = newPident("inAttributes")
 
 
-  var attrCase = newCase(newPDotFieldExpr("parser", "attrKey"))
+  var attrCase = newCaseStmt(newPDotFieldExpr("parser", "attrKey"))
   for attr in xsd.getAttributes():
     if attr.hasName() and attr.hasType():
       attrCase.addBranch(
@@ -403,7 +486,7 @@ proc generateParserForObject(xsd): PProcDecl =
     if not(startsWith(parser.attrKey(), ["xmlns:", "xsi:", "xml:"])):
       raiseUnexpectedAttribute(parser)
 
-  var mainCase = newCase(newPDotFieldExpr("parser", "kind"))
+  var mainCase = newCaseStmt(newPDotFieldExpr("parser", "kind"))
 
   mainCase.addBranch(
     xmlAttribute,
@@ -411,7 +494,7 @@ proc generateParserForObject(xsd): PProcDecl =
     next
   )
 
-  var bodyCase = newCase(newPDotFieldExpr(
+  var bodyCase = newCaseStmt(newPDotFieldExpr(
     "parser", newPCall("elementName")))
 
   proc addFieldBranch(
@@ -423,7 +506,8 @@ proc generateParserForObject(xsd): PProcDecl =
       let parseCall = parserForType(
         field,
         {xmlElementStart, xmlElementEnd},
-        field.entry.name()
+        field.entry.name(),
+        isMixed = xsd.isMixed()
       )
         # newPCall(
         # field.parserCall,
@@ -432,12 +516,18 @@ proc generateParserForObject(xsd): PProcDecl =
         # field.entry.name().newPLit()
       # )
 
-      target.addBranch(newPLit(field.entry.name()), addPositionComment(parseCall))
+      target.addBranch(
+        newPLit(field.entry.name()),
+        addPositionComment(parseCall))
 
+  var used = {
+    xmlError, xmlEof, xmlCharData, xmlWhitespace,
+    xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
+  }
 
   for element in xsd:
     if element.kind in {xekSequence, xekChoice}:
-      let wrapper = typeForWrapper(element)
+      let wrapper = typeForWrapper(element, xsd)
       case wrapper.kind:
         of xewkSingleSequence:
           for field in wrapper.elements:
@@ -448,15 +538,89 @@ proc generateParserForObject(xsd): PProcDecl =
             addFieldBranch(bodyCase, wrapper.elements[0], wrapper)
 
           else:
-            raiseImplementError("")
+            raiseImplementError(
+              "More than one element in unbounded sequence")
+
+        of xewkUnboundedChoice:
+          let parsers = mapIt(wrapper.alternatives, it.entry).getFirstParsers()
+          used.excl xmlCharData
+
+          let token = newPIdent("token")
+          var
+            expected: set[XsdTokenKind] = getExpectedKinds(parsers)
+            tokenCase = newCaseStmt(newPDotFieldExpr(token, "kind"))
+            nameCase = newCaseStmt(newPDotFieldExpr(token, "name"))
+
+
+          let
+            bodyKind = xsd.bodyTypeName().newPIdent()
+            addcall = if xsd[0].isFinite: newPIdent("`=`") else: newPIdent("add")
+
+          for parser in parsers.onKinds & parsers.onNames:
+            let
+              field = parser.entry.get().identName().newPIdent()
+              targetType = parser.entry.get().typeName().newPType()
+
+            let
+              kindName = parser.entry.get().name().kindEnumName(xsd).newPident()
+              tag = if parser.onKind: "" else: parser.tag
+              inMixed = newPLit(xsd.isMixed())
+
+            let body = pquote do:
+              @@@<<(posComment())
+              var tmp: `targetType.toNNode()`
+              `newPIdent(parser.parser)`(tmp, parser, `tag`, `inMixed`)
+              var tmp2 = `bodyKind`(kind: `kindName`, `field`: tmp)
+              `addCall`(target.xsdChoice, tmp2)
+
+            if parser.onKind:
+              tokenCase.addBranch(parser.kind, body)
+
+            else:
+              bodyCase.addBranch(parser.tag, body)
+
+          if xsd.isMixed():
+            let id = kindEnumName("mixedStr", xsd).newPIdent()
+            tokenCase.addBranch(
+              xtkCharData,
+              pquote do:
+                @@@<<(posComment())
+                var tmp: string
+                parseXsdString(tmp, parser)
+                var tmp2 = `bodyKind`(kind: `id`, mixedStr: tmp)
+                `addCall`(target.xsdChoice, tmp2)
+            )
+
+          nameCase.addBranch:
+            pquote do:
+              raiseUnexpectedToken(parser, token)
+
+          tokenCase.addBranch({xtkElementStart, xtkElementOpen}, nameCase)
+          tokenCase.addBranch:
+            pquote do:
+              raiseUnexpectedToken(parser, token)
+
+
+          mainCase.addBranch(
+            xmlCharData,
+            pquote do:
+              @@@<<(posComment())
+              let `token` = parser.xsdToken(`newPLit(expected)`)
+              `tokenCase`
+          )
 
         else:
-          raiseImplementError("")
+          discard
+          # raiseImplementKindError(wrapper)
 
 
   bodyCase.addBranch pquote do:
     @@@<<(posComment())
-    raiseUnexpectedElement(parser)
+    if inMixed:
+      return
+
+    else:
+      raiseUnexpectedElement(parser)
 
   mainCase.addBranch(
     {xmlElementOpen, xmlElementStart},
@@ -469,13 +633,8 @@ proc generateParserForObject(xsd): PProcDecl =
       # `next`
   )
 
-  var used = {
-    xmlError, xmlEof, xmlCharData, xmlWhitespace,
-    xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
-  }
-
   if xsd.findIt(it.kind == xekSequence) == 0:
-    let wrapper = typeForWrapper(xsd[0])
+    let wrapper = typeForWrapper(xsd[0], xsd)
 
     if wrapper.elements.len > 0:
       let
@@ -525,29 +684,35 @@ proc generateParserForObject(xsd): PProcDecl =
 
   let parseName = newPIdent(result.name)
 
-  expandMacros:
-    result.impl = pquote do:
-      @@@<<(posComment())
-      when target is seq:
-        while parser.elementName == tag:
-          var res: typeof(target[0])
-          `parsename`(res, parser, tag)
-          add(target, res)
+  # let alwaysElement = not isPossiblePrimitiveType(xsd)
 
-      elif target is Option:
-        if parser.elementName == tag:
-          var res: typeof(target.get())
-          `parseName`(res, parser, tag)
-          target = some(res)
+  # if xsd.hasAttr("mixed"):
+  #   echov xsd.treeRepr()
+  #   echov alwaysElement
 
-      else:
-        if parser.elementName() != tag:
-          raiseUnexpectedElement(parser, tag)
+  result.impl = pquote do:
+    @@@<<(posComment())
+    when target is seq:
+      while parser.elementName == tag:
+        var res: typeof(target[0])
+        `parsename`(res, parser, tag)
+        add(target, res)
 
-        next(parser)
-        var `inAttributes` = false
-        while true:
-          `mainCase`
+    elif target is Option:
+      if parser.elementName == tag:
+        var res: typeof(target.get())
+        `parseName`(res, parser, tag)
+        target = some(res)
+
+    else:
+      # if `alwaysElement` or parser.kind in {xmlElementStart, xmlElementOpen}:
+      #   if parser.elementName() != tag:
+      #     raiseUnexpectedElement(parser, tag)
+
+      next(parser)
+      var `inAttributes` = false
+      while true:
+        `mainCase`
 
 
 
@@ -555,7 +720,7 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
   result.decl = newPEnumDecl(xsd.name)
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
-  var mainCase = newCase(
+  var mainCase = newCaseStmt(
     newPDotFieldExpr("parser", "strVal"))
 
 
@@ -646,10 +811,15 @@ proc generateForXsd(xsd): seq[PNimDecl] =
         echov treeRepr(xsd)
 
     of xekComplexType:
-      return @[
-        toNimDecl generateTypeForObject(xsd),
-        toNimDecl generateParserForObject(xsd)
-      ]
+      let (decl, wrapped) = generateTypeForObject(xsd)
+      result.add decl
+      if wrapped.isSome():
+        let (objectDecl, enumDecl) = wrapped.get()
+        result.add toNimDecl(enumDecl)
+        result.add toNimDecl(objectDecl)
+
+      result.add toNimDecl(generateParserForObject(xsd))
+
 
 
     of xekGroupDeclare:
@@ -704,6 +874,9 @@ import hmisc/algo/halgorithm
     """
 import res
 import hmisc/hexceptions
+import hmisc/hdebug_misc
+
+startHax()
 
 var parser = newHXmlParser(AbsFile "/tmp/in.xml")
 
@@ -715,6 +888,8 @@ try:
 except:
   pprintErr()
 
+
+echo "Done parsing"
 
 """
   )
