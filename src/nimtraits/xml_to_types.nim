@@ -520,6 +520,7 @@ proc generateParserForObject(xsd, cache): PProcDecl =
     xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
   }
 
+  let bodyKind = xsd.bodyTypeName().newPIdent()
   for element in xsd:
     if element.kind in {xekSequence, xekChoice}:
       let wrapper = typeForWrapper(element, xsd)
@@ -552,9 +553,7 @@ proc generateParserForObject(xsd, cache): PProcDecl =
             tokenCase = newCaseStmt(newPDotFieldExpr(token, "kind"))
             nameCase = newCaseStmt(newPDotFieldExpr(token, "name"))
 
-          let
-            bodyKind = xsd.bodyTypeName().newPIdent()
-            addcall = newPIdent("add")
+          let addcall = newPIdent("add")
 
           for parser in parsers.onKinds & parsers.onNames:
             let
@@ -609,6 +608,19 @@ proc generateParserForObject(xsd, cache): PProcDecl =
         else:
           discard
           # raiseImplementKindError(wrapper)
+
+  if xmlCharData in used and xsd.isMixed():
+    let id = kindEnumName("mixedStr", xsd, cache).newPIdent()
+    used.excl xmlCharData
+    mainCase.addBranch(
+      xmlCharData,
+      pquote do:
+        @@@<<(posComment())
+        var tmp: string
+        parseXsdString(tmp, parser)
+        var tmp2 = `bodyKind`(kind: `id`, mixedStr: tmp)
+        add(target.xsdChoice, tmp2)
+    )
 
 
   bodyCase.addBranch pquote do:
