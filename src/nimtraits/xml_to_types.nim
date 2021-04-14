@@ -231,10 +231,6 @@ proc wrappedType(
 proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
   var elements: seq[XsdType]
 
-  var xsd = xsd
-  if xsd.kind == xekGroupRef:
-    xsd = xsd.groupRef[0]
-
   for element in xsd:
     case element.kind:
       of xekElement:
@@ -284,6 +280,12 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
       result.choiceEntry = xsd
       result.parent = parent
       result.alternatives = elements
+
+    of xekGroupRef:
+      result = XsdElementWrapper(kind: xewkSingleChoice)
+      result.choiceEntry = xsd
+      result.parent = parent
+      result.alternatives = @[typeForEntry(xsd)]
 
     else:
       discard
@@ -347,15 +349,7 @@ proc newParseTargetPType(ptype: PNType): PNType =
 proc generateTypeForObject(xsd, cache):
   tuple[main: PObjectDecl, choice: Option[(PObjectDecl, PEnumDecl)]] =
 
-  result.main = newPObjectDecl(
-    xsd.typeName(),
-#     docComment =
-#       xsd.treeRepr(colored = false) & &"""
-
-# - is primitive restriction: {xsd.isPrimitiveRestriction()}
-# - is primitive extension: {xsd.isPrimitiveExtension()}
-# """
-  )
+  result.main = newPObjectDecl(xsd.typeName())
 
   for attr in xsd.getAttributes():
     if attr.hasName():
@@ -395,7 +389,7 @@ proc generateTypeForObject(xsd, cache):
             else:
               raiseImplementError($wrapper.elements.len)
 
-          of xewkUnboundedChoice:
+          of xewkUnboundedChoice, xewkSingleChoice:
             result.main.addField(
               "xsdChoice",
               XsdType().wrappedType(xsd, wrapper.kind)
@@ -418,6 +412,15 @@ proc generateTypeForObject(xsd, cache):
 
               genEnum.addField(id, docComment = alt.entry.name().wrap("``"))
 
+            if xsd[0].kind == xekGroupRef:
+              echov xsd.treeRepr()
+              selector.addBranch(
+                kindEnumName("groupRef", xsd, cache).newPIdent(),
+                newObjectField("groupRef", xsd[0].typeName().newPType())
+              )
+
+              genEnum.addField(kindEnumName("groupRef", xsd, cache))
+
             if xsd.isMixed():
               let id = kindEnumName("mixedStr", xsd, cache)
               genEnum.addField(id, docComment = "`std:mixed` string content")
@@ -431,9 +434,6 @@ proc generateTypeForObject(xsd, cache):
             result.choice = some((genObject, genEnum))
 
 
-
-          else:
-            raiseImplementKindError(wrapper)
 
       else:
         discard
@@ -826,7 +826,7 @@ proc generateForXsd(xsd, cache): seq[PNimDecl] =
       else:
         echov treeRepr(xsd)
 
-    of xekComplexType:
+    of xekComplexType, xekGroupDecl:
       let (decl, wrapped) = generateTypeForObject(xsd, cache)
       result.add decl
       if wrapped.isSome():
@@ -835,11 +835,6 @@ proc generateForXsd(xsd, cache): seq[PNimDecl] =
         result.add toNimDecl(objectDecl)
 
       result.add toNimDecl(generateParserForObject(xsd, cache))
-
-
-
-    of xekGroupDeclare:
-      discard
 
     else:
       echov treeRepr(xsd)
