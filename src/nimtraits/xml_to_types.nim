@@ -1,19 +1,17 @@
 import hmisc/hasts/[xml_ast, xsd_ast]
 import hmisc/other/[oswrap, hshell]
-import hmisc/algo/[halgorithm, hstring_algo, clformat, hseq_mapping]
+import hmisc/algo/[halgorithm, hstring_algo, clformat,
+                   hseq_mapping, namegen]
 import std/[strutils, strformat, sequtils]
 import hmisc/hdebug_misc
 import hnimast
+import hpprint
 
 import fusion/matching
 
 {.experimental: "caseStmtMacros".}
 
 import std/parsexml
-
-proc enumPrefixForCamel*(camel: string): string =
-  for part in camel.splitCamel():
-    result.add toLowerAscii(part[0])
 
 proc assertKind*[T, E: enum](node: T, kindPath: openarray[(int, E)]) =
   var next = node
@@ -96,28 +94,6 @@ proc newPDotCall*(
   result = newPTree(nnkDotExpr, toPNode(main), call)
 
 
-proc fixIdentName*(str: string, prefix: string): string =
-  if str in [
-
-    "addr", "and", "as", "asm", "bind", "block", "break", "case", "cast",
-    "concept", "const", "continue", "converter", "defer", "discard",
-    "distinct", "div", "do", "elif", "else", "end", "enum", "except",
-    "export", "finally", "for", "from", "func", "if", "import", "in",
-    "include", "interface", "is", "isnot", "iterator", "let", "macro",
-    "method", "mixin", "mod", "nil", "not", "notin", "object", "of", "or",
-    "out", "proc", "ptr", "raise", "ref", "return", "shl", "shr", "static",
-    "template", "try", "tuple", "type", "using", "var", "when", "while",
-    "xor", "yield",
-
-  ]:
-    assert prefix.len > 0
-    result = prefix & capitalizeAscii(str)
-
-  else:
-    result = str
-
-
-
 
 
 type PNType = NType[PNode]
@@ -129,7 +105,13 @@ type PNType = NType[PNode]
 using xsd: XsdEntry
 
 
-func fixTypeName(str: string): string = capitalizeAscii(str.fixIdentName("X"))
+func fixTypeName(str: string): string =
+  if str.isReservedNimType():
+    return str
+
+  else:
+    capitalizeAscii(str.fixIdentName("X"))
+
 proc identName*(xsd): string =
   if xsd.kind == xekExtension:
     "baseExt"
@@ -137,18 +119,16 @@ proc identName*(xsd): string =
   else:
     xsd.name().fixIdentName("x")
 
-proc typeName*(xsd): string = xsd.getType().fixTypeName()
+proc typeName*(xsd): string =
+  result = xsd.getType().getNimType()
+
 proc kindTypeName*(xsd): string = xsd.typeName() & "Kind"
 proc bodyTypeName*(xsd): string = xsd.typeName() & "Body"
 proc parserName*(typeName: string): string =
   "parse" & capitalizeAscii(typeName)
 
 proc kindEnumName*(name: string; parent: XsdEntry): string =
-  parent.typeName().
-    filterIt(it in {'A' .. 'Z'}).join().toLowerAscii() &
-    name.capitalizeAscii()
-
-
+  kindEnumName(name, parent.typeName())
 
 type
   XsdWrapperKind = enum
@@ -184,38 +164,23 @@ type
 
 
 proc typeForEntry(xsd): XsdType =
-  var isPrimitive = true
-  var (ptype, parserCall) = case xsd.getType:
-    of xsd"string":       (newPType ("string"),   "parseXsdString")
-    of xsd"boolean":      (newPType ("bool"),     "parseXsdBoolean")
-    of xsd"decimal":      (newPType ("float"),    "parseXsdDecimal")
-    of xsd"integer":      (newPType ("int"),      "parseXsdInteger")
-    of xsd"float":        (newPType ("float"),    "parseXsdFloat")
-    of xsd"double":       (newPType ("float"),    "parseXsdDouble")
-    of xsd"duration":     (newPType ("Duration"), "parseXsdDuration")
-    of xsd"dateTime":     (newPType ("DateTime"), "parseXsdDateTime")
-    of xsd"time":         (newPType ("DateTime"), "parseXsdTime")
-    of xsd"date":         (newPType ("DateTime"), "parseXsdDate")
-    of xsd"gYearMonth":   (newPType ("DateTime"), "parseXsdGYearMonth")
-    of xsd"gYear":        (newPType ("DateTime"), "parseXsdGYear")
-    of xsd"gMonthDay":    (newPType ("DateTime"), "paresXsdGMonthDay")
-    of xsd"gDay":         (newPType ("DateTime"), "parseXsdGDay")
-    of xsd"gMonth":       (newPType ("DateTime"), "parseXsdGMonth")
-    # QUESTION - not sure what would be the best representation for this
-    # type of content.
-    of xsd"hexBinary":    (newPType ("string"), "parseXsdHexBinary")
-    of xsd"base64Binary": (newPType ("string"), "parseXsdBase64Binary")
-    of xsd"anyURI":       (newPType ("URI"), "parseXsdUri")
-    of xsd"QName":        (newPType ("???"), "parseXsdQName")
-    of xsd"anyType":      (newPType ("XmlNode"), "parseXsdAnyType")
-    else:
-      isPrimitive = false
-      if xsd.getType().startsWith("xsd:"):
-        raiseImplementError(xsd.getType)
+  var isPrimitive = xsd.getType().isPrimitiveType()
+  var
+    ptype: PNType
+    parserCall: string
 
-      else:
-        (newPType(xsd.getType.fixTypeName()),
-         "parse" & fixTypeName(xsd.getType))
+  if isPrimitive:
+    let kind = xsd.getType().classifyPrimitiveTypeKind()
+    ptype = newPType(kind.getNimName())
+    parserCall = kind.getParserName()
+
+  else:
+    if xsd.getType().startsWith("xsd:"):
+      raiseImplementError(xsd.getType)
+
+    else:
+      ptype = newPType(xsd.getType.fixTypeName())
+      parserCall = "parse" & fixTypeName(xsd.getType)
 
   var wrapperKind: XsdWrapperKind
   if xsd.isOptional():
@@ -268,7 +233,19 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
         # echov element.kind
         discard
 
+
   var kind: XsdElementWrapperKind
+
+  if parent.isMixed():
+    # `mixed` type might contain any number of string elements interleaved
+    # with other elements, even if is defined using `xsd:sequence`.
+    return XsdElementWrapper(
+      kind: xewkUnboundedChoice,
+      parent: parent,
+      choiceEntry: xsd,
+      alternatives: elements
+    )
+
   case xsd.kind:
     of xekSequence:
       if xsd.isFinite():
@@ -306,7 +283,8 @@ proc parserForType(
   result = newPCall(
     xsdType.parserCall,
     newPDotFieldExpr("target", xsdType.entry.identName()),
-    newPIdent("parser")
+    newPIdent("parser"),
+    newPLit(inTag)
   )
 
   if xsdType.isPrimitive:
@@ -318,7 +296,6 @@ proc parserForType(
           skipElementEnd(parser, `inTag`)
 
   else:
-    result.add newPLit(inTag)
     result.add newPLit(isMixed)
 
 
@@ -406,7 +383,8 @@ proc generateTypeForObject(xsd):
           of xewkUnboundedChoice:
             result.main.addField(
               "xsdChoice",
-              XsdType().wrappedType(xsd, wrapper.kind))
+              XsdType().wrappedType(xsd, wrapper.kind)
+            )
 
             var
               genObject = newPObjectDecl(xsd.bodyTypeName())
@@ -425,7 +403,7 @@ proc generateTypeForObject(xsd):
 
             if xsd.isMixed():
               let id = kindEnumName("mixedStr", xsd)
-              genEnum.addField(id)
+              genEnum.addField(id, docComment = "`std:mixed` string content")
 
               selector.addBranch(
                 id.newPIdent(),
@@ -542,7 +520,13 @@ proc generateParserForObject(xsd): PProcDecl =
               "More than one element in unbounded sequence")
 
         of xewkUnboundedChoice:
-          let parsers = mapIt(wrapper.alternatives, it.entry).getFirstParsers()
+          var parsers: XsdParsers
+          if xsd.isMixed() and xsd[0].kind notin {xekSequence}:
+            parsers = getFirstParsers(@[xsd])
+
+          else:
+            parsers = mapIt(wrapper.alternatives, it.entry).getFirstParsers()
+
           used.excl xmlCharData
 
           let token = newPIdent("token")
@@ -551,10 +535,9 @@ proc generateParserForObject(xsd): PProcDecl =
             tokenCase = newCaseStmt(newPDotFieldExpr(token, "kind"))
             nameCase = newCaseStmt(newPDotFieldExpr(token, "name"))
 
-
           let
             bodyKind = xsd.bodyTypeName().newPIdent()
-            addcall = if xsd[0].isFinite: newPIdent("`=`") else: newPIdent("add")
+            addcall = newPIdent("add")
 
           for parser in parsers.onKinds & parsers.onNames:
             let
@@ -566,10 +549,14 @@ proc generateParserForObject(xsd): PProcDecl =
               tag = if parser.onKind: "" else: parser.tag
               inMixed = newPLit(xsd.isMixed())
 
+            var args = @[newPIdent("tmp"), newPIdent("parser"), newPLit(tag)]
+            if not parser.entry.get().getType().isPrimitiveType():
+              args.add inMixed
+
             let body = pquote do:
               @@@<<(posComment())
               var tmp: `targetType.toNNode()`
-              `newPIdent(parser.parser)`(tmp, parser, `tag`, `inMixed`)
+              `newPIdent(parser.parser)`(@@@args)
               var tmp2 = `bodyKind`(kind: `kindName`, `field`: tmp)
               `addCall`(target.xsdChoice, tmp2)
 
@@ -579,26 +566,19 @@ proc generateParserForObject(xsd): PProcDecl =
             else:
               bodyCase.addBranch(parser.tag, body)
 
-          if xsd.isMixed():
-            let id = kindEnumName("mixedStr", xsd).newPIdent()
-            tokenCase.addBranch(
-              xtkCharData,
-              pquote do:
-                @@@<<(posComment())
-                var tmp: string
-                parseXsdString(tmp, parser)
-                var tmp2 = `bodyKind`(kind: `id`, mixedStr: tmp)
-                `addCall`(target.xsdChoice, tmp2)
-            )
-
           nameCase.addBranch:
             pquote do:
               raiseUnexpectedToken(parser, token)
 
           tokenCase.addBranch({xtkElementStart, xtkElementOpen}, nameCase)
+          let id = kindEnumName("mixedStr", xsd).newPIdent()
           tokenCase.addBranch:
             pquote do:
-              raiseUnexpectedToken(parser, token)
+              @@@<<(posComment())
+              var tmp: string
+              parseXsdString(tmp, parser)
+              var tmp2 = `bodyKind`(kind: `id`, mixedStr: tmp)
+              add(target.xsdChoice, tmp2)
 
 
           mainCase.addBranch(
@@ -633,22 +613,40 @@ proc generateParserForObject(xsd): PProcDecl =
       # `next`
   )
 
-  if xsd.findIt(it.kind == xekSequence) == 0:
-    let wrapper = typeForWrapper(xsd[0], xsd)
 
-    if wrapper.elements.len > 0:
-      let
-        first = wrapper.elements[0]
-        call = newPIdent(first.parserCall)
-        name = first.entry.identName().newPIdent()
+  # if xsd.isMixed():
+  #   let
+  #     id = kindEnumName("mixedStr", xsd).newPIdent()
+  #     bodyKind = xsd.bodyTypeName().newPIdent()
 
-      used.excl xmlCharData
-      mainCase.addBranch(
-        xmlCharData,
-        pquote do:
-          @@@<<(posComment())
-          `call`(target.`name`, parser, tag)
-      )
+  #   used.excl xmlCharData
+  #   mainCase.addBranch(
+  #     xmlCharData,
+  #     pquote do:
+  #       @@@<<(posComment())
+  #       var tmp: string
+  #       parseXsdString(tmp, parser)
+  #       var tmp2 = `bodyKind`(kind: `id`, mixedStr: tmp)
+  #       add(target.xsdChoice, tmp2)
+  #   )
+
+
+  # if xsd.findIt(it.kind == xekSequence) == 0:
+  #   let wrapper = typeForWrapper(xsd[0], xsd)
+
+  #   if wrapper.elements.len > 0:
+  #     let
+  #       first = wrapper.elements[0]
+  #       call = newPIdent(first.parserCall)
+  #       name = first.entry.identName().newPIdent()
+
+  #     used.excl xmlCharData
+  #     mainCase.addBranch(
+  #       xmlCharData,
+  #       pquote do:
+  #         @@@<<(posComment())
+  #         `call`(target.`name`, parser, tag)
+  #     )
 
     # else:
     #   raiseImplementError(xsd.treeRepr())
@@ -678,8 +676,7 @@ proc generateParserForObject(xsd): PProcDecl =
         break
 
       else:
-        # IMPLEMENT generate error
-        discard
+        raiseUnexpectedElement(parser)
   )
 
   let parseName = newPIdent(result.name)
@@ -689,6 +686,8 @@ proc generateParserForObject(xsd): PProcDecl =
   # if xsd.hasAttr("mixed"):
   #   echov xsd.treeRepr()
   #   echov alwaysElement
+
+  let first = getFirstSet(xsd)
 
   result.impl = pquote do:
     @@@<<(posComment())
@@ -705,7 +704,7 @@ proc generateParserForObject(xsd): PProcDecl =
         target = some(res)
 
     else:
-      # if `alwaysElement` or parser.kind in {xmlElementStart, xmlElementOpen}:
+      # # if `alwaysElement` or parser.kind in {xmlElementStart, xmlElementOpen}:
       #   if parser.elementName() != tag:
       #     raiseUnexpectedElement(parser, tag)
 
@@ -853,11 +852,8 @@ proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
   result.add forward
   result.add procs
 
-when isMainModule:
-  startHax()
-  let decls = generateForXsd(AbsFile "/tmp/schema.xsd")
-
-  "/tmp/res.nim".writeFile(
+proc writeXsdGenerator*(decls: seq[PNimDecl], target: AbsFile) =
+  target.writeFile(
     """
 import std/[options]
 import hmisc/hasts/[xml_ast]
@@ -867,6 +863,12 @@ import hmisc/algo/halgorithm
 
 """ & $decls
   )
+
+when isMainModule:
+  startHax()
+  let decls = generateForXsd(AbsFile "/tmp/schema.xsd")
+
+  AbsFile("/tmp/res.nim").writeFile(decls)
 
   execShell shellCmd(nim, check, errorMax = 2, "/tmp/res.nim")
 
@@ -890,6 +892,10 @@ except:
 
 
 echo "Done parsing"
+
+import hpprint
+
+echo doxygen
 
 """
   )
