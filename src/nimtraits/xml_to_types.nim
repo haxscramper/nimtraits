@@ -104,6 +104,12 @@ type PNType = NType[PNode]
 
 using xsd: XsdEntry
 
+type
+  XsdCache = object
+    enumNames: StringNameCache
+
+using cache: var XsdCache
+
 
 func fixTypeName(str: string): string =
   if str.isReservedNimType():
@@ -127,8 +133,12 @@ proc bodyTypeName*(xsd): string = xsd.typeName() & "Body"
 proc parserName*(typeName: string): string =
   "parse" & capitalizeAscii(typeName)
 
-proc kindEnumName*(name: string; parent: XsdEntry): string =
-  kindEnumName(name, parent.typeName())
+proc kindEnumName*(name: string; parent: XsdEntry, cache): string =
+  kindEnumName(name, parent.typeName(), cache.enumNames, true)
+
+
+proc kindFieldName*(name: string; parent: XsdEntry, cache): string =
+  "f" & kindEnumName(name, "F" & parent.typeName(), cache.enumNames, false)
 
 type
   XsdWrapperKind = enum
@@ -220,6 +230,11 @@ proc wrappedType(
 
 proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
   var elements: seq[XsdType]
+
+  var xsd = xsd
+  if xsd.kind == xekGroupRef:
+    xsd = xsd.groupRef[0]
+
   for element in xsd:
     case element.kind:
       of xekElement:
@@ -329,7 +344,7 @@ proc newParseTargetPType(ptype: PNType): PNType =
   # result.add newPType("var", [ptype])
   # result.add newPType("var", [newPType("Option", [ptype])])
 
-proc generateTypeForObject(xsd):
+proc generateTypeForObject(xsd, cache):
   tuple[main: PObjectDecl, choice: Option[(PObjectDecl, PEnumDecl)]] =
 
   result.main = newPObjectDecl(
@@ -360,7 +375,7 @@ proc generateTypeForObject(xsd):
       of xekAttribute:
         discard
 
-      of xekSequence, xekChoice:
+      of xekSequence, xekChoice, xekGroupRef:
         let wrapper = typeForWrapper(entry, xsd)
         # echov wrapper.kind, treeRepr(wrapper.xsdEntry)
         # raiseImplementError("")
@@ -394,15 +409,17 @@ proc generateTypeForObject(xsd):
               "kind", newPType(xsd.kindTypeName()))
 
             for alt in wrapper.alternatives:
-              let id = alt.entry.name().kindEnumName(xsd)
+              let id = alt.entry.name().kindEnumName(xsd, cache)
               selector.addBranch(
                 id.newPIdent(),
-                newObjectField(alt.entry.identName(), alt.ptype))
+                newObjectField(
+                  alt.entry.name().kindFieldName(xsd, cache),
+                  alt.ptype))
 
-              genEnum.addField(id)
+              genEnum.addField(id, docComment = alt.entry.name().wrap("``"))
 
             if xsd.isMixed():
-              let id = kindEnumName("mixedStr", xsd)
+              let id = kindEnumName("mixedStr", xsd, cache)
               genEnum.addField(id, docComment = "`std:mixed` string content")
 
               selector.addBranch(
@@ -422,7 +439,7 @@ proc generateTypeForObject(xsd):
         discard
         # echov entry.kind
 
-proc generateParserForObject(xsd): PProcDecl =
+proc generateParserForObject(xsd, cache): PProcDecl =
   let targetName = xsd.name.fixTypeName()
   result = newPProcDecl("parse" & targetName, iinfo = currIInfo())
   result.addArgument("target", newParseTargetPType(
@@ -541,11 +558,11 @@ proc generateParserForObject(xsd): PProcDecl =
 
           for parser in parsers.onKinds & parsers.onNames:
             let
-              field = parser.entry.get().identName().newPIdent()
+              field = parser.entry.get().name().kindFieldName(xsd, cache).newPIdent()
               targetType = parser.entry.get().typeName().newPType()
 
             let
-              kindName = parser.entry.get().name().kindEnumName(xsd).newPident()
+              kindName = parser.entry.get().name().kindEnumName(xsd, cache).newPident()
               tag = if parser.onKind: "" else: parser.tag
               inMixed = newPLit(xsd.isMixed())
 
@@ -571,7 +588,7 @@ proc generateParserForObject(xsd): PProcDecl =
               raiseUnexpectedToken(parser, token)
 
           tokenCase.addBranch({xtkElementStart, xtkElementOpen}, nameCase)
-          let id = kindEnumName("mixedStr", xsd).newPIdent()
+          let id = kindEnumName("mixedStr", xsd, cache).newPIdent()
           tokenCase.addBranch:
             pquote do:
               @@@<<(posComment())
@@ -762,7 +779,7 @@ proc generateForEnum*(xsd): tuple[decl: PEnumDecl, parser: PProcDecl] =
     else:
       `mainCase`
 
-proc generateForXsd(xsd): seq[PNimDecl] =
+proc generateForXsd(xsd, cache): seq[PNimDecl] =
   case xsd.kind:
     of xekSimpleType:
       if isEnumerationType(xsd):
@@ -810,14 +827,14 @@ proc generateForXsd(xsd): seq[PNimDecl] =
         echov treeRepr(xsd)
 
     of xekComplexType:
-      let (decl, wrapped) = generateTypeForObject(xsd)
+      let (decl, wrapped) = generateTypeForObject(xsd, cache)
       result.add decl
       if wrapped.isSome():
         let (objectDecl, enumDecl) = wrapped.get()
         result.add toNimDecl(enumDecl)
         result.add toNimDecl(objectDecl)
 
-      result.add toNimDecl(generateParserForObject(xsd))
+      result.add toNimDecl(generateParserForObject(xsd, cache))
 
 
 
@@ -833,11 +850,14 @@ proc withoutImpl*[N](decl: ProcDecl[N]): ProcDecl[N] =
 
 proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
   let document = parseXsd(xsd)
-  var procs: seq[PNimDecl]
-  var types: seq[PNimTypeDecl]
-  var forward: seq[PNimDecl]
+  var
+    procs: seq[PNimDecl]
+    types: seq[PNimTypeDecl]
+    forward: seq[PNimDecl]
+    cache: XsdCache
+
   for entry in document:
-    for generated in generateForXsd(entry):
+    for generated in generateForXsd(entry, cache):
       if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
         types.add toNimTypeDecl(generated)
 
