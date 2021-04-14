@@ -504,6 +504,12 @@ proc generateParserForObject(xsd, cache): PProcDecl =
         field.entry.name(),
         isMixed = xsd.isMixed()
       )
+        # newPCall(
+        # field.parserCall,
+        # newPDotFieldExpr("target", field.entry.identName()),
+        # newPIdent("parser"),
+        # field.entry.name().newPLit()
+      # )
 
       target.addBranch(
         newPLit(field.entry.name()),
@@ -515,7 +521,7 @@ proc generateParserForObject(xsd, cache): PProcDecl =
   }
 
   for element in xsd:
-    if element.kind in {xekSequence, xekChoice, xekGroupRef}:
+    if element.kind in {xekSequence, xekChoice}:
       let wrapper = typeForWrapper(element, xsd)
       case wrapper.kind:
         of xewkSingleSequence:
