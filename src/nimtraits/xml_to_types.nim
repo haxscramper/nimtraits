@@ -94,6 +94,19 @@ proc newPDotCall*(
   result = newPTree(nnkDotExpr, toPNode(main), call)
 
 
+proc enumFieldName(str: string, prefix: string): string =
+  let parts = @[prefix] & split(str, {'-', '_'})
+
+  result = parts[0].toLowerAscii()
+  for part in parts[1 ..^ 1]:
+    result &= capitalizeAscii(part)
+
+  var res: string
+  for ch in result:
+    res &= toLatinAbbrChar(ch)
+
+  result = res
+
 
 
 type PNType = NType[PNode]
@@ -174,39 +187,35 @@ type
   XsdGenKind = enum
     xgkObject
     xgkEnum
+    xgkDistinct
 
-  XsdGenFieldBase {.inheritable.} = object
+  XsdGenBase {.inheritable.} = object
     nimName: string
-    entry: XsdEntry
+    entry {.requiresinit.}: XsdEntry
     xsdType: XsdType
 
-  XsdGenAttr = object of XsdGenFieldBase
-  XsdGenElement = object of XsdGenFieldBase
+  XsdGenAttr = object of XsdGenBase
+  XsdGenElement = object of XsdGenBase
     wrapper: XsdWrapperKind
 
-  XsdGenEnum = object
+  XsdGenEnum = object of XsdGenBase
     value: string
-    nimName: string
-    entry: XsdEntry
-    xsdType: XsdType
 
-  XsdGen = object
-    entry: XsdEntry
-    nimName: string
+  XsdGen = object of XsdGenBase
     case kind: XsdGenKind
       of xgkObject:
         attrs: seq[XsdGenAttr]
         elements: seq[XsdGenElement]
         isMixed: bool
+        isChoice: bool
+        choiceElements: seq[XsdGenElement]
 
       of xgkEnum:
-        values: XsdGenEnum
+        values: seq[XsdGenEnum]
 
-
-
-
-
-
+      of xgkDistinct:
+        ## Base type is stored in `xsdType` field
+        discard
 
 proc typeForEntry(xsd): XsdType =
   var isPrimitive = xsd.getType().isPrimitiveType()
@@ -324,6 +333,120 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
       discard
 
 
+
+
+proc toXsdEnum(xsd, cache): XsdGen =
+  result = XsdGen(entry: xsd, nimName: xsd.name)
+  let enumPrefix = enumPrefixForCamel(xsd.name)
+
+  for field in enumerationFields(xsd):
+    result.values.add XsdGenEnum(
+      nimName: enumFieldName(field.value, enumPrefix),
+      entry: xsd,
+      value: field.value
+    )
+
+proc toXsdDistinct(xsd, cache): XsdGen =
+  result = XsdGen(
+    entry: xsd,
+    nimName: xsd.name().fixTypeName(),
+    xsdType: xsd[0].typeForEntry()
+  )
+
+proc toXsdComplex(xsd, cache): XsdGen =
+  result = XsdGen(entry: xsd, nimName: xsd.typeName())
+
+  for attr in xsd.getAttributes():
+    if attr.hasName():
+      result.attrs.add XsdGenAttr(
+        entry: xsd,
+        nimName: attr.identName(),
+        xsdType: attr.typeForEntry()
+      )
+
+  if isPrimitiveExtension(xsd):
+    result.elements.add XsdGenElement(
+      nimName: "baseExt",
+      xsdType: xsd.getExtensionSection().typeForEntry(),
+      entry: nil
+    )
+
+
+  for entry in xsd:
+    case entry.kind:
+      of xekAttribute:
+        discard
+
+      of xekSequence, xekChoice, xekGroupRef:
+        let wrapper = typeForWrapper(entry, xsd)
+        case wrapper.kind:
+          of xewkSingleSequence:
+            for element in wrapper.elements:
+              result.elements.add XsdGenElement(
+                nimName: element.entry.identName(),
+                xsdType: element,
+                entry: element.entry,
+                wrapper: xwkScalar
+              )
+
+          of xewkUnboundedSequence:
+            if wrapper.elements.len == 1:
+              result.elements.add XsdGenElement(
+                nimName: wrapper.elements[0].entry.identName(),
+                xsdType: wrapper.elements[0],
+                entry: wrapper.elements[0].entry,
+                wrapper: xwkSequence
+              )
+              # result.main.addField(
+              #   wrapper.elements[0].entry.identName(),
+              #   wrapper.elements[0].wrappedType(xsd, wrapper.kind))
+
+            else:
+              raiseImplementError($wrapper.elements.len)
+
+          of xewkUnboundedChoice:
+            result.isChoice = true
+
+            for alt in wrapper.alternatives:
+              let id = alt.entry.name().kindEnumName(xsd, cache)
+              result.elements.add XsdGenElement(
+                nimName: alt.entry.name().kindFieldName(xsd, cache),
+                xsdType: alt,
+                entry: alt.entry,
+                wrapper: xwkScalar
+              )
+
+            if xsd.isMixed():
+              result.isMixed = true
+
+          else:
+            raiseImplementKindError(wrapper)
+
+      else:
+        discard
+
+proc toXsdGen(xsd, cache): XsdGen =
+  case xsd.kind:
+    of xekSimpleType:
+      if isEnumerationType(xsd):
+        return toXsdEnum(xsd, cache)
+
+      elif isPrimitiveRestriction(xsd):
+        return toXsdDistinct(xsd, cache)
+
+    of xekComplexType:
+      return toXsdComplex(xsd, cache)
+
+    of xekGroupDeclare:
+      discard
+
+    else:
+      raiseImplementKindError(xsd)
+
+
+
+
+
 proc parserForType(
     xsdType: XsdType, eventKinds: set[XmlEventKind],
     inTag: string = "", skipWrapperElement: bool = true,
@@ -354,19 +477,6 @@ proc parserForType(
 
 
 
-
-proc enumFieldName(str: string, prefix: string): string =
-  let parts = @[prefix] & split(str, {'-', '_'})
-
-  result = parts[0].toLowerAscii()
-  for part in parts[1 ..^ 1]:
-    result &= capitalizeAscii(part)
-
-  var res: string
-  for ch in result:
-    res &= toLatinAbbrChar(ch)
-
-  result = res
 
 proc newParseTargetPType(ptype: PNType): PNType =
   result = newPType(ntkGenericSpec)
