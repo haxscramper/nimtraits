@@ -171,6 +171,41 @@ type
         parent: XsdEntry
 
 
+  XsdGenKind = enum
+    xgkObject
+    xgkEnum
+
+  XsdGenFieldBase {.inheritable.} = object
+    nimName: string
+    entry: XsdEntry
+    xsdType: XsdType
+
+  XsdGenAttr = object of XsdGenFieldBase
+  XsdGenElement = object of XsdGenFieldBase
+    wrapper: XsdWrapperKind
+
+  XsdGenEnum = object
+    value: string
+    nimName: string
+    entry: XsdEntry
+    xsdType: XsdType
+
+  XsdGen = object
+    entry: XsdEntry
+    nimName: string
+    case kind: XsdGenKind
+      of xgkObject:
+        attrs: seq[XsdGenAttr]
+        elements: seq[XsdGenElement]
+        isMixed: bool
+
+      of xgkEnum:
+        values: XsdGenEnum
+
+
+
+
+
 
 
 proc typeForEntry(xsd): XsdType =
@@ -347,15 +382,7 @@ proc newParseTargetPType(ptype: PNType): PNType =
 proc generateTypeForObject(xsd, cache):
   tuple[main: PObjectDecl, choice: Option[(PObjectDecl, PEnumDecl)]] =
 
-  result.main = newPObjectDecl(
-    xsd.typeName(),
-#     docComment =
-#       xsd.treeRepr(colored = false) & &"""
-
-# - is primitive restriction: {xsd.isPrimitiveRestriction()}
-# - is primitive extension: {xsd.isPrimitiveExtension()}
-# """
-  )
+  result.main = newPObjectDecl(xsd.typeName())
 
   for attr in xsd.getAttributes():
     if attr.hasName():
