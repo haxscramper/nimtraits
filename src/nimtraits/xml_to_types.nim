@@ -84,6 +84,11 @@ proc kindEnumName*(name: string; parent: XsdEntry, cache): string =
 proc kindFieldName*(name: string; parent: XsdEntry, cache): string =
   "f" & kindEnumName(name, "F" & parent.typeName(), cache.enumNames, false)
 
+proc fieldName*(name: string, cache): string =
+  fixIdentName(name, "f", cache.enumNames)
+
+# proc fieldName*(name: string, parent: XsdEntry, cache)
+
 type
   XsdWrapperKind = enum
     xwkScalar
@@ -145,6 +150,7 @@ type
         attrs: seq[XsdGenAttr]
         elements: seq[XsdGenElement]
         isMixed: bool
+        mixedStrField: Option[XsdGenElement]
         isChoice: bool
         choiceElements: seq[XsdGenElement]
         # kindTypeName: string
@@ -302,7 +308,6 @@ proc toXsdDistinct(xsd, cache): XsdGen =
 
 proc toXsdComplex(xsd, cache): XsdGen =
   var fieldCache: XsdCache
-  # Field names must only be unique within an object
   result = XsdGen(
     entry: xsd, kind: xgkObject,
     nimName: xsd.typeName(),
@@ -313,7 +318,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
     if attr.hasName():
       result.attrs.add XsdGenAttr(
         entry: xsd,
-        nimName: attr.identName(),
+        nimName: attr.name().fieldName(fieldCache),
         xsdType: attr.typeForEntry(),
         xmlValue: attr.name()
       )
@@ -339,19 +344,19 @@ proc toXsdComplex(xsd, cache): XsdGen =
           of xewkSingleSequence:
             for element in wrapper.elements:
               result.elements.add XsdGenElement(
-                nimName: element.entry.identName(),
+                nimName: element.entry.name().fieldName(fieldCache),
                 xsdType: element,
                 entry: element.entry,
                 wrapper: xwkScalar,
                 xmlTag: element.entry.name(),
                 enumName: kindFieldName(
-                  element.entry.identName(), xsd, fieldCache))
+                  element.entry.identName(), xsd, cache))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
               let element = wrapper.elements[0]
               result.elements.add XsdGenElement(
-                nimName: element.entry.identName(),
+                nimName: element.entry.name().fieldName(fieldCache),
                 xsdType: element,
                 entry: element.entry,
                 wrapper: xwkSequence,
@@ -368,7 +373,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
             for alt in wrapper.alternatives:
               let id = alt.entry.name().kindEnumName(xsd, cache)
               result.elements.add XsdGenElement(
-                nimName: alt.entry.name().kindFieldName(xsd, fieldCache),
+                nimName: alt.entry.name().fieldName(fieldCache),
                 xsdType: alt,
                 entry: alt.entry,
                 wrapper: xwkScalar,
@@ -378,6 +383,17 @@ proc toXsdComplex(xsd, cache): XsdGen =
 
             if xsd.isMixed():
               result.isMixed = true
+              result.mixedStrField = some XsdGenElement(
+                nimName: "mixedStr",
+                entry: xsd,
+                xmlTag: "",
+                enumName: "mixedStr".kindEnumName(xsd, cache),
+                xsdType: XsdType(
+                  ptype: newPType("string"),
+                  isPrimitive: true,
+                  parserCall: xtkString.getParserName()
+                )
+              )
 
           else:
             raiseImplementKindError(wrapper)
@@ -385,17 +401,20 @@ proc toXsdComplex(xsd, cache): XsdGen =
       else:
         discard
 
-proc toXsdGen(xsd, cache): XsdGen =
+proc toXsdGen(xsd, cache): seq[XsdGen] =
   case xsd.kind:
     of xekSimpleType:
       if isEnumerationType(xsd):
-        return toXsdEnum(xsd, cache)
+        result.add toXsdEnum(xsd, cache)
 
       elif isPrimitiveRestriction(xsd):
-        return toXsdDistinct(xsd, cache)
+        result.add toXsdDistinct(xsd, cache)
 
     of xekComplexType:
-      return toXsdComplex(xsd, cache)
+      result.add toXsdComplex(xsd, cache)
+      # if result.nimName == "":
+      #   echov treeRepr(xsd)
+      #   raiseImplementError("")
 
     of xekGroupDeclare:
       discard
@@ -954,19 +973,14 @@ proc choiceFields(gen): seq[XsdGenElement] =
   result = gen.choiceElements
   if gen.isMixed:
     result.add gen.elements
-    result.add XsdGenElement(
-      nimName: "mixedStr",
-      entry: gen.entry,
-      xmlTag: "",
-      enumName: gen.enumPrefix & "MixedStr",
-      xsdType: XsdType(
-        ptype: newPType("string"),
-        isPrimitive: true,
-        parserCall: xtkString.getParserName()
-      )
-    )
+    result.add gen.mixedStrField.get()
 
 proc generateForObject(gen, cache): seq[PNimDecl] =
+  # if gen.nimName == "SpType":
+  #   echov gen.entry.treeRepr()
+  #   raiseImplementError("")
+
+  # echov gen.nimName
   var parser = newPProcDecl("parse" & gen.nimname, iinfo = currIInfo())
   with parser:
     addArgument("target", gen.nimName.newPType())
@@ -1013,7 +1027,8 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
     for alt in gen.choiceFields():
       selector.addBranch(
         newPIdent(alt.enumName),
-        newObjectField(alt.nimName, alt.xsdType.ptype))
+        newObjectField(alt.nimName, alt.xsdType.ptype,
+                       docComment = alt.entry.name()))
 
       genEnum.addField(alt.enumName)
 
@@ -1068,6 +1083,8 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
 
       bodyCase.addBranch(
         newPLit(elem.xmlTag), addPositionComment(parseCall))
+
+    result.add toNimDecl(genObject)
 
 
   bodyCase.addBranch pquote do:
@@ -1218,16 +1235,17 @@ proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
     cache: XsdCache
 
   for entry in document:
-    for generated in toXsdGen(entry, cache).generateForXsd(cache):
-      if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
-        types.add toNimTypeDecl(generated)
+    for tmp in toXsdGen(entry, cache):
+      for generated in tmp.generateForXsd(cache):
+        if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
+          types.add toNimTypeDecl(generated)
 
-      elif generated.kind in {nekProcDecl}:
-        forward.add toNimDecl(generated.procDecl.withoutImpl())
-        procs.add generated
+        elif generated.kind in {nekProcDecl}:
+          forward.add toNimDecl(generated.procDecl.withoutImpl())
+          procs.add generated
 
-      else:
-        procs.add generated
+        else:
+          procs.add generated
 
   result.add toNimDecl(types)
   result.add forward
