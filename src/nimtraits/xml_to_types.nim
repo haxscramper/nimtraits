@@ -351,7 +351,6 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
 
 
 proc toXsdEnum(xsd, cache): XsdGen =
-  echov xsd.name()
   result = XsdGen(entry: xsd, nimName: xsd.name, kind: xgkEnum)
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
@@ -371,6 +370,8 @@ proc toXsdDistinct(xsd, cache): XsdGen =
   )
 
 proc toXsdComplex(xsd, cache): XsdGen =
+  var fieldCache: XsdCache
+  # Field names must only be unique within an object
   result = XsdGen(
     entry: xsd, kind: xgkObject,
     nimName: xsd.typeName(),
@@ -392,7 +393,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
       xsdType: xsd.getExtensionSection().typeForEntry(),
       entry: nil,
       xmlTag: "",
-      enumName: kindFieldName("baseExt", xsd, cache)
+      enumName: kindFieldName("baseExt", xsd, fieldCache)
     )
 
 
@@ -413,7 +414,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
                 wrapper: xwkScalar,
                 xmlTag: element.entry.name(),
                 enumName: kindFieldName(
-                  element.entry.identName(), xsd, cache))
+                  element.entry.identName(), xsd, fieldCache))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
@@ -436,7 +437,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
             for alt in wrapper.alternatives:
               let id = alt.entry.name().kindEnumName(xsd, cache)
               result.elements.add XsdGenElement(
-                nimName: alt.entry.name().kindFieldName(xsd, cache),
+                nimName: alt.entry.name().kindFieldName(xsd, fieldCache),
                 xsdType: alt,
                 entry: alt.entry,
                 wrapper: xwkScalar,
@@ -1072,6 +1073,7 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
     var
       genEnum = newPEnumDecl(gen.kindTypeName())
       selector = newObjectCaseField("kind", newPType(gen.kindTypeName))
+      bodyObject = newPObjectDecl(gen.bodyTypeName())
 
     let
       bodyKind = gen.kindTypeName.newPIdent()
@@ -1106,9 +1108,13 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
       else:
         bodyCase.addBranch(alt.xmlTag, body)
 
-    genObject.addField(selector)
-    result.add toNimDecl(genObject)
+    bodyObject.addField(selector)
+
+    genObject.addField("body", newPType("seq", [bodyObject.name]))
+
     result.add toNimDecl(genEnum)
+    result.add toNimDecl(bodyObject)
+    result.add toNimDecl(genObject)
 
   else:
     for elem in gen.elements:
