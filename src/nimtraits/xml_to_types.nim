@@ -190,7 +190,7 @@ type
     xgkDistinct
 
   XsdGenBase {.inheritable.} = object
-    nimName: string
+    nimName {.requiresinit.}: string
     entry {.requiresinit.}: XsdEntry
     xsdType: XsdType
 
@@ -199,22 +199,25 @@ type
 
   XsdGenElement = object of XsdGenBase
     wrapper: XsdWrapperKind
-    enumName: string ## Associated field enum name
-    xmlTag: string
+    enumName {.requiresinit.}: string ## Associated enum constant (if field
+                                      ## is used in `xsd:choice` or `mixed`
+                                      ## objects)
+    xmlTag {.requiresinit.}: string
 
   XsdGenEnum = object of XsdGenBase
     value: string
 
   XsdGen = object of XsdGenBase
-    enumPrefix: string
     case kind: XsdGenKind
       of xgkObject:
+        enumPrefix {.requiresinit.}: string
         attrs: seq[XsdGenAttr]
         elements: seq[XsdGenElement]
         isMixed: bool
         isChoice: bool
         choiceElements: seq[XsdGenElement]
-        kindTypeName: string
+        # kindTypeName: string
+        # bodyTypeName: string
 
       of xgkEnum:
         values: seq[XsdGenEnum]
@@ -224,6 +227,10 @@ type
         discard
 
 using gen: XsdGen
+
+
+proc kindTypeName*(gen): string = gen.nimName & "Kind"
+proc bodyTypeName*(gen): string = gen.nimName & "Body"
 
 proc typeForEntry(xsd): XsdType =
   var isPrimitive = xsd.getType().isPrimitiveType()
@@ -344,6 +351,7 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
 
 
 proc toXsdEnum(xsd, cache): XsdGen =
+  echov xsd.name()
   result = XsdGen(entry: xsd, nimName: xsd.name, kind: xgkEnum)
   let enumPrefix = enumPrefixForCamel(xsd.name)
 
@@ -363,7 +371,11 @@ proc toXsdDistinct(xsd, cache): XsdGen =
   )
 
 proc toXsdComplex(xsd, cache): XsdGen =
-  result = XsdGen(entry: xsd, nimName: xsd.typeName())
+  result = XsdGen(
+    entry: xsd, kind: xgkObject,
+    nimName: xsd.typeName(),
+    enumPrefix: enumPrefixForCamel(xsd.typeName()),
+  )
 
   for attr in xsd.getAttributes():
     if attr.hasName():
@@ -378,7 +390,9 @@ proc toXsdComplex(xsd, cache): XsdGen =
     result.elements.add XsdGenElement(
       nimName: "baseExt",
       xsdType: xsd.getExtensionSection().typeForEntry(),
-      entry: nil
+      entry: nil,
+      xmlTag: "",
+      enumName: kindFieldName("baseExt", xsd, cache)
     )
 
 
@@ -396,20 +410,22 @@ proc toXsdComplex(xsd, cache): XsdGen =
                 nimName: element.entry.identName(),
                 xsdType: element,
                 entry: element.entry,
-                wrapper: xwkScalar
-              )
+                wrapper: xwkScalar,
+                xmlTag: element.entry.name(),
+                enumName: kindFieldName(
+                  element.entry.identName(), xsd, cache))
 
           of xewkUnboundedSequence:
             if wrapper.elements.len == 1:
+              let element = wrapper.elements[0]
               result.elements.add XsdGenElement(
-                nimName: wrapper.elements[0].entry.identName(),
-                xsdType: wrapper.elements[0],
-                entry: wrapper.elements[0].entry,
-                wrapper: xwkSequence
-              )
-              # result.main.addField(
-              #   wrapper.elements[0].entry.identName(),
-              #   wrapper.elements[0].wrappedType(xsd, wrapper.kind))
+                nimName: element.entry.identName(),
+                xsdType: element,
+                entry: element.entry,
+                wrapper: xwkSequence,
+                xmlTag: element.entry.name(),
+                enumName: kindFieldName(
+                  element.entry.identName(), xsd, cache))
 
             else:
               raiseImplementError($wrapper.elements.len)
@@ -423,7 +439,9 @@ proc toXsdComplex(xsd, cache): XsdGen =
                 nimName: alt.entry.name().kindFieldName(xsd, cache),
                 xsdType: alt,
                 entry: alt.entry,
-                wrapper: xwkScalar
+                wrapper: xwkScalar,
+                enumName: alt.entry.name().kindEnumName(xsd, cache),
+                xmlTag: alt.entry.name()
               )
 
             if xsd.isMixed():
@@ -1007,6 +1025,8 @@ proc choiceFields(gen): seq[XsdGenElement] =
     result.add XsdGenElement(
       nimName: "mixedStr",
       entry: gen.entry,
+      xmlTag: "",
+      enumName: gen.enumPrefix & "MixedStr",
       xsdType: XsdType(
         ptype: newPType("string"),
         isPrimitive: true,
@@ -1050,7 +1070,7 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
 
   if gen.isMixed or gen.choiceElements.len > 0:
     var
-      genEnum = newPEnumDecl(gen.kindTypeName)
+      genEnum = newPEnumDecl(gen.kindTypeName())
       selector = newObjectCaseField("kind", newPType(gen.kindTypeName))
 
     let
@@ -1198,9 +1218,39 @@ proc generateForEnum(gen, cache): tuple[decl: PEnumDecl, parser: PProcDecl] =
 
 
 proc generateForDistinct(gen, cache):
-  tuple[decl: PEnumDecl, parser: PProcDecl] =
+  tuple[decl: PAliasDecl, parser: PProcDecl] =
 
-  result.parser = newPProcDecl(gen.nimName, iinfo = currIInfo())
+  result.decl = newAliasDecl(gen.nimName.newPType(), gen.xsdType.ptype)
+  result.parser = newPProcDecl(gen.nimName.parserName(), iinfo = currIInfo())
+
+  with result.parser:
+    addArgument("target", result.decl.newType)
+    addArgument("parser", newPType("var", ["HXmlParser"]))
+    addArgument("tag", newPType("string"))
+
+  let
+    baseParseCall = newPIdent(result.parser.name)
+    parseCall = newPIdent(result.parser.name)
+    baseType = result.decl.oldType.toNNode()
+    newType = result.decl.newType.toNNode()
+
+  result.parser.impl = pquote do:
+    @@@<<(posComment())
+    when target is seq:
+      var res: typeof(target[0])
+      `parseCall`(res, parser, tag)
+      add(target, res)
+
+    elif target is Option:
+      var res: typeof(target.get())
+      `parseCall`(res, parser, tag)
+      target = some(res)
+
+    else:
+      var tmp: `baseType`
+      `baseParseCall`(tmp, parser)
+      target = `newType`(tmp)
+
 
 
 proc generateForXsd(gen: XsdGen, cache): seq[PNimDecl] =
