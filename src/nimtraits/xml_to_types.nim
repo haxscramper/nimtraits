@@ -21,7 +21,6 @@ proc assertKind*[T, E: enum](node: T, kindPath: openarray[(int, E)]) =
 
 proc enumerationFields*(xsd: XsdEntry): seq[XsdEntry] =
   xsd.assertKind([(0, xekSimpleType), (0, xekRestriction)])
-  # echo treeRepr(xsd, indexed = true)
   return xsd[0].subnodes
 
 
@@ -148,13 +147,19 @@ type
       of xgkObject:
         enumPrefix {.requiresinit.}: string
         attrs: seq[XsdGenAttr]
-        elements: seq[XsdGenElement]
-        isMixed: bool
-        mixedStrField: Option[XsdGenElement]
-        isChoice: bool
-        choiceElements: seq[XsdGenElement]
-        # kindTypeName: string
-        # bodyTypeName: string
+        case isMixed: bool
+          of true:
+            mixedStrField: Option[XsdGenElement]
+
+          of false:
+            discard
+
+        case isChoice: bool
+          of true:
+            choiceElements: seq[XsdGenElement]
+
+          of false:
+            elements: seq[XsdGenElement]
 
       of xgkEnum:
         values: seq[XsdGenEnum]
@@ -322,7 +327,9 @@ proc toXsdComplex(xsd, cache): XsdGen =
     entry: xsd, kind: xgkObject,
     nimName: xsd.typeName(),
     enumPrefix: enumPrefixForCamel(xsd.typeName()),
-    xsdType: XsdType(isPrimitive: false)
+    xsdType: XsdType(isPrimitive: false),
+    isChoice: isChoiceType(xsd) or isMixed(xsd),
+    isMixed: isMixed(xsd)
   )
 
   for attr in xsd.getAttributes():
@@ -343,19 +350,26 @@ proc toXsdComplex(xsd, cache): XsdGen =
       enumName: kindFieldName("baseExt", xsd, fieldCache)
     )
 
+  if isMixed(xsd):
+    result.mixedStrField = some XsdGenElement(
+      nimName: "mixedStr",
+      entry: xsd,
+      xmlTag: "",
+      enumName: "mixedStr".kindEnumName(xsd, cache),
+      xsdType: XsdType(
+        ptype: newPType("string"),
+        isPrimitive: true,
+        parserCall: xtkString.getParserName()))
+
+
 
   for entry in xsd:
     case entry.kind:
-      of xekAttribute:
-        discard
-
       of xekSequence, xekChoice, xekGroupRef:
         let wrapper = typeForWrapper(entry, xsd)
         case wrapper.kind:
           of xewkSingleSequence:
             for element in wrapper.elements:
-              # var element = element
-              # element.ptype = wrappedType(element,, wrapper.kind)
               result.elements.add XsdGenElement(
                 nimName: element.entry.name().fieldName(fieldCache),
                 xsdType: element,
@@ -381,11 +395,9 @@ proc toXsdComplex(xsd, cache): XsdGen =
               raiseImplementError($wrapper.elements.len)
 
           of xewkUnboundedChoice:
-            result.isChoice = true
-
             for alt in wrapper.alternatives:
               let id = alt.entry.name().kindEnumName(xsd, cache)
-              result.elements.add XsdGenElement(
+              result.choiceElements.add XsdGenElement(
                 nimName: alt.entry.name().fieldName(fieldCache),
                 xsdType: alt,
                 entry: alt.entry,
@@ -394,19 +406,6 @@ proc toXsdComplex(xsd, cache): XsdGen =
                 xmlTag: alt.entry.name()
               )
 
-            if xsd.isMixed():
-              result.isMixed = true
-              result.mixedStrField = some XsdGenElement(
-                nimName: "mixedStr",
-                entry: xsd,
-                xmlTag: "",
-                enumName: "mixedStr".kindEnumName(xsd, cache),
-                xsdType: XsdType(
-                  ptype: newPType("string"),
-                  isPrimitive: true,
-                  parserCall: xtkString.getParserName()
-                )
-              )
 
           else:
             raiseImplementKindError(wrapper)
@@ -465,9 +464,13 @@ proc newParseTargetPType(ptype: PNType): PNType =
   result = newPType("var", [result])
 
 proc choiceFields(gen): seq[XsdGenElement] =
-  result = gen.choiceElements
-  if gen.isMixed:
+  if gen.isChoice:
+    result = gen.choiceElements
+
+  else:
     result.add gen.elements
+
+  if gen.isMixed:
     result.add gen.mixedStrField.get()
 
 proc generateForObject(gen, cache): seq[PNimDecl] =
@@ -509,7 +512,7 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
     xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
   }
 
-  if gen.isMixed or gen.choiceElements.len > 0:
+  if gen.isMixed or gen.isChoice:
     if gen.isMixed:
       unused.excl xmlCharData
 
