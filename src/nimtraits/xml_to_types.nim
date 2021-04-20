@@ -152,6 +152,7 @@ type
       of xgkObject:
         enumPrefix {.requiresinit.}: string
         attrs: seq[XsdGenAttr]
+        baseExtField: Option[XsdGenElement]
         case isMixed: bool
           of true:
             mixedStrField: XsdGenElement
@@ -361,7 +362,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
       )
 
   if isPrimitiveExtension(xsd):
-    result.elements.add XsdGenElement(
+    result.baseExtField = some XsdGenElement(
       nimName: "baseExt",
       xsdType: xsd.getExtensionSection().typeForEntry(),
       entry: nil,
@@ -526,6 +527,21 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
     xmlError, xmlEof, xmlCharData, xmlWhitespace,
     xmlComment, xmlPI, xmlCData, xmlEntity, xmlSpecial
   }
+
+
+  if gen.baseExtField.isSome():
+    unused.excl xmlCharData
+    let field = gen.baseExtField.get()
+
+    genObject.addField(field.nimName, field.xsdType.ptype)
+
+    mainCase.addBranch(xmlCharData):
+      pquote do:
+        @@@<<(posComment())
+        var tmp: `field.xsdType.ptype.toNNode()`
+        `newPIdent(field.xsdType.parserCall)`(tmp, parser, "")
+        target.`newPIdent(field.nimName)` = tmp
+
 
   if gen.isMixed or gen.isChoice:
     if gen.isMixed:
