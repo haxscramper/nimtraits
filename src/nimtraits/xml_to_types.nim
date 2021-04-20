@@ -99,7 +99,7 @@ type
     ptype: PNType
     parserCall: string
     kind: XsdWrapperKind
-    isPrimitive {.requiresinit.}: bool
+    isPrimitive: bool
 
   XsdElementWrapperKind = enum
     xewkSingleSequence
@@ -125,8 +125,8 @@ type
     xgkDistinct
 
   XsdGenBase {.inheritable.} = object
-    nimName {.requiresinit.}: string
-    entry {.requiresinit.}: XsdEntry
+    nimName: string
+    entry: XsdEntry
     xsdType: XsdType
 
   XsdGenAttr = object of XsdGenBase
@@ -134,13 +134,18 @@ type
 
   XsdGenElement = object of XsdGenBase
     wrapper: XsdWrapperKind
-    enumName {.requiresinit.}: string ## Associated enum constant (if field
+    enumName: string ## Associated enum constant (if field
                                       ## is used in `xsd:choice` or `mixed`
                                       ## objects)
-    xmlTag {.requiresinit.}: string
+    xmlTag: string
 
   XsdGenEnum = object of XsdGenBase
     value: string
+
+  XsdGenChoice = object
+    nimName: string
+    xsdType: XsdType
+    elements: seq[XsdGenElement]
 
   XsdGen = object of XsdGenBase
     case kind: XsdGenKind
@@ -149,14 +154,14 @@ type
         attrs: seq[XsdGenAttr]
         case isMixed: bool
           of true:
-            mixedStrField: Option[XsdGenElement]
+            mixedStrField: XsdGenElement
 
           of false:
             discard
 
         case isChoice: bool
           of true:
-            choiceElements: seq[XsdGenElement]
+            choiceElements: seq[XsdGenChoice]
 
           of false:
             elements: seq[XsdGenElement]
@@ -323,6 +328,7 @@ proc toXsdDistinct(xsd, cache): XsdGen =
 
 proc toXsdComplex(xsd, cache): XsdGen =
   var fieldCache: XsdCache
+
   result = XsdGen(
     entry: xsd, kind: xgkObject,
     nimName: xsd.typeName(),
@@ -331,6 +337,8 @@ proc toXsdComplex(xsd, cache): XsdGen =
     isChoice: isChoiceType(xsd) or isMixed(xsd),
     isMixed: isMixed(xsd)
   )
+
+
 
   for attr in xsd.getAttributes():
     if attr.hasName():
@@ -351,7 +359,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
     )
 
   if isMixed(xsd):
-    result.mixedStrField = some XsdGenElement(
+    result.mixedStrField = XsdGenElement(
       nimName: "mixedStr",
       entry: xsd,
       xmlTag: "",
@@ -360,8 +368,6 @@ proc toXsdComplex(xsd, cache): XsdGen =
         ptype: newPType("string"),
         isPrimitive: true,
         parserCall: xtkString.getParserName()))
-
-
 
   for entry in xsd:
     case entry.kind:
@@ -395,15 +401,23 @@ proc toXsdComplex(xsd, cache): XsdGen =
               raiseImplementError($wrapper.elements.len)
 
           of xewkUnboundedChoice:
+            var elements: seq[XsdGenElement]
             for alt in wrapper.alternatives:
               let id = alt.entry.name().kindEnumName(xsd, cache)
-              result.choiceElements.add XsdGenElement(
+              elements.add XsdGenElement(
                 nimName: alt.entry.name().fieldName(fieldCache),
                 xsdType: alt,
                 entry: alt.entry,
                 wrapper: xwkScalar,
                 enumName: alt.entry.name().kindEnumName(xsd, cache),
                 xmlTag: alt.entry.name()
+              )
+
+            for group in elements.groupByIt(it.xsdType.ptype):
+              result.choiceElements.add XsdGenChoice(
+                nimName: group[0].xsdType.ptype.head.fieldName(fieldCache),
+                xsdType: group[0].xsdType,
+                elements: group
               )
 
 
@@ -463,16 +477,6 @@ proc newParseTargetPType(ptype: PNType): PNType =
   result.add newPType("Option", [ptype])
   result = newPType("var", [result])
 
-proc choiceFields(gen): seq[XsdGenElement] =
-  if gen.isChoice:
-    result = gen.choiceElements
-
-  else:
-    result.add gen.elements
-
-  if gen.isMixed:
-    result.add gen.mixedStrField.get()
-
 proc generateForObject(gen, cache): seq[PNimDecl] =
   var parser = newPProcDecl(gen.nimname.parserName(), iinfo = currIInfo())
   with parser:
@@ -521,35 +525,56 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
       selector = newObjectCaseField("kind", newPType(gen.kindTypeName))
       bodyObject = newPObjectDecl(gen.bodyTypeName())
 
-    for alt in gen.choiceFields():
+    echov "Choice object with group of", gen.choiceElements.len, "elements"
+    for group in gen.choiceElements:
       selector.addBranch(
-        newPIdent(alt.enumName),
-        newObjectField(alt.nimName, alt.xsdType.ptype,
-                       docComment = alt.entry.name()))
+        group.elements.mapIt(newPIdent(it.enumName)),
+        newObjectField(group.nimName, group.xsdType.ptype))
 
-      genEnum.addField(alt.enumName)
+      var nameMapCase = newCaseStmt(newPDotFieldExpr("parser", newPCall("elementName")))
+      for alt in group.elements:
+        genEnum.addField(alt.enumName)
+        nameMapCase.addBranch(alt.xmlTag, newPIdent(alt.enumName))
 
-      var args = @[newPIdent("tmp"), newPIdent("parser"), newPLit(alt.xmlTag)]
-      if not alt.xsdType.isPrimitive:
+      nameMapCase.addBranch(newPIdent(group.elements[0].enumName))
+
+      var args = @[
+        newPIdent("tmp"), newPIdent("parser"),
+        newPDotCall("parser", "elementName")]
+
+      if not group.xsdType.isPrimitive:
         args.add newPLit(gen.isMixed)
 
       let body = pquote do:
         @@@<<(posComment())
-        var tmp: `alt.xsdType.ptype.toNNode()`
-        `newPIdent(alt.xsdType.parserCall)`(@@@args)
-        add(
-          target.xsdChoice,
-          `gen.bodyTypeName().newPIdent()`(
-            kind: `newPIdent(alt.enumName)`,
-            `newPident(alt.nimName)`: tmp
-          )
-        )
+        let kind = `nameMapCase`
 
-      if alt.nimName == "mixedStr":
-        mainCase.addBranch(xmlCharData, body)
+        var tmp: `group.xsdType.ptype.toNNode()`
+        `newPIdent(group.xsdType.parserCall)`(@@@args)
 
-      else:
-        bodyCase.addBranch(alt.xmlTag, body)
+        var tmp2 = `gen.bodyTypeName().newPIdent()`(kind: kind)
+        tmp2.`newPident(group.nimName)` = tmp
+
+        add(target.xsdChoice, tmp2)
+
+      bodyCase.addBranch(mapIt(group.elements, it.xmlTag), body)
+
+    if gen.isMixed:
+      let alt = gen.mixedStrField
+      genEnum.addField(alt.enumName)
+      selector.addBranch(
+        newPIdent(alt.enumName),
+        newObjectField(alt.nimName, alt.xsdType.ptype))
+
+      mainCase.addBranch(xmlCharData):
+        pquote do:
+          @@@<<(posComment())
+          var tmp: string
+          parseXsdString(tmp, parser, "")
+          add(
+            target.xsdChoice,
+            `gen.bodyTypeName().newPIdent()`(
+              kind: `newPIdent(alt.enumName)`, mixedStr: tmp))
 
     bodyObject.addField(selector)
 
@@ -583,17 +608,18 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
 
     result.add toNimDecl(genObject)
 
-
   bodyCase.addBranch pquote do:
     @@@<<(posComment())
     if inMixed: return
     else: raiseUnexpectedElement(parser)
 
-
-  mainCase.addBranch(xmlElementClose, next)
   mainCase.addBranch({xmlElementOpen, xmlElementStart}):
     pquote do:
       `bodyCase`
+
+
+
+  mainCase.addBranch(xmlElementClose, next)
 
   mainCase.addBranch(xmlElementEnd):
     pquote do:
