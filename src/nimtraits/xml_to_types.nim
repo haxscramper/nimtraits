@@ -206,6 +206,13 @@ proc typeForEntry(xsd): XsdType =
     else:
       wrapperKind = xwkOption
 
+  elif xsd.isUnboundedRepeat():
+    wrapperKind = xwkSequence
+
+  if xsd.getType() in ["memberdefType"]:
+    echov xsd.getType(), wrapperKind
+    echov xsd.treeRepr()
+
   return XsdType(
     ptype: ptype, parserCall: parserCall,
     kind: wrapperKind, entry: xsd,
@@ -525,7 +532,6 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
       selector = newObjectCaseField("kind", newPType(gen.kindTypeName))
       bodyObject = newPObjectDecl(gen.bodyTypeName())
 
-    echov "Choice object with group of", gen.choiceElements.len, "elements"
     for group in gen.choiceElements:
       selector.addBranch(
         group.elements.mapIt(newPIdent(it.enumName)),
