@@ -349,10 +349,14 @@ proc toXsdComplex(xsd, cache): XsdGen =
 
   for attr in xsd.getAttributes():
     if attr.hasName():
+      var t = attr.typeForEntry()
+      if attr.isOptional():
+        t.ptype = newPType("Option", [t.ptype])
+
       result.attrs.add XsdGenAttr(
         entry: xsd,
         nimName: attr.name().fieldName(fieldCache),
-        xsdType: attr.typeForEntry(),
+        xsdType: t,
         xmlName: attr.name()
       )
 
