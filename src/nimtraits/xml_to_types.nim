@@ -269,6 +269,9 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
       result.xsdEntry = xsd
       result.elements = elements
 
+      for element in mitems(result.elements):
+        element.ptype = wrappedType(element, xsd, kind)
+
     of xekChoice:
       if xsd.isFinite():
         kind = xewkSingleChoice
@@ -280,6 +283,10 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
       result.choiceEntry = xsd
       result.parent = parent
       result.alternatives = elements
+
+      for element in mitems(result.alternatives):
+        element.ptype = wrappedType(element, xsd, kind)
+
 
     else:
       discard
@@ -343,6 +350,8 @@ proc toXsdComplex(xsd, cache): XsdGen =
         case wrapper.kind:
           of xewkSingleSequence:
             for element in wrapper.elements:
+              # var element = element
+              # element.ptype = wrappedType(element,, wrapper.kind)
               result.elements.add XsdGenElement(
                 nimName: element.entry.name().fieldName(fieldCache),
                 xsdType: element,
@@ -463,10 +472,6 @@ proc newParseTargetPType(ptype: PNType): PNType =
   result.add ptype
   result.add newPType("Option", [ptype])
   result = newPType("var", [result])
-
-  # result.add newPType("var", [])
-  # result.add newPType("var", [ptype])
-  # result.add newPType("var", [newPType("Option", [ptype])])
 
 proc generateTypeForObject(xsd, cache):
   tuple[main: PObjectDecl, choice: Option[(PObjectDecl, PEnumDecl)]] =
@@ -981,9 +986,9 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
   #   raiseImplementError("")
 
   # echov gen.nimName
-  var parser = newPProcDecl("parse" & gen.nimname, iinfo = currIInfo())
+  var parser = newPProcDecl(gen.nimname.parserName(), iinfo = currIInfo())
   with parser:
-    addArgument("target", gen.nimName.newPType())
+    addArgument("target", gen.nimName.newPType().newParseTargetPType())
     addArgument("parser", newPtype("var", ["HXmlParser"]))
     addArgument("tag", newPType("string"))
     addArgument("inMixed", newPType("bool"),
@@ -1108,7 +1113,7 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
         raiseUnexpectedElement(parser)
 
 
-  let parsename = newPIdent("parse" & gen.nimName)
+  let parsename = newPIdent(gen.nimName.parserName())
   parser.impl = pquote do:
     @@@<<(posComment())
     when target is seq:
@@ -1133,7 +1138,7 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
 
 proc generateForEnum(gen, cache): tuple[decl: PEnumDecl, parser: PProcDecl] =
   result.decl = newPEnumDecl(gen.nimName)
-  result.parser = newPProcDecl("parse" & gen.nimName, iinfo = currIInfo())
+  result.parser = newPProcDecl(gen.nimName.parserName(), iinfo = currIInfo())
 
   var mainCase = newCaseStmt(newPDotFieldExpr("parser", "strVal"))
 
@@ -1178,12 +1183,12 @@ proc generateForDistinct(gen, cache):
   result.parser = newPProcDecl(gen.nimName.parserName(), iinfo = currIInfo())
 
   with result.parser:
-    addArgument("target", result.decl.newType)
+    addArgument("target", result.decl.newType.newParseTargetPType())
     addArgument("parser", newPType("var", ["HXmlParser"]))
     addArgument("tag", newPType("string"))
 
   let
-    baseParseCall = newPIdent(result.parser.name)
+    baseParseCall = newPIdent(gen.xsdType.parserCall)
     parseCall = newPIdent(result.parser.name)
     baseType = result.decl.oldType.toNNode()
     newType = result.decl.newType.toNNode()
