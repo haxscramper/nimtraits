@@ -263,3 +263,14 @@ suite "Nim traits combinations":
 
   expect ValidationError:
     t.sfld = "1039285701394875091843750984231570234897"
+
+suite "`trait`":
+  test "template annotations":
+    template Eq(arg1: string, arg2: string) {.pragma.}
+
+    type EqUser = object
+      fld {.Eq("123", "123").}: int
+
+    storeTraits(EqUser, commonDerives)
+    echo EqUser().fld.hasCustomPragma2(Eq)
+    echo EqUser().fld.getCustomPragmaVal2(Eq)
