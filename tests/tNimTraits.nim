@@ -1,7 +1,7 @@
 {.push warning[UnusedImport]:off.}
 
 import sugar, strutils, sequtils, strformat, hashes, tables, macros
-import ../src/nimtraits
+import ../src/nimtraits, ../src/nimtraits/trait_xml
 import marshal
 import hmisc/helpers
 import hnimast
@@ -195,7 +195,6 @@ suite "Nim traits":
         exported = false
       )
 
-      debugecho $!result
 
     const deriveConf = DeriveConf( # Create custom set of trait
                                    # configurations
@@ -264,13 +263,26 @@ suite "Nim traits combinations":
   expect ValidationError:
     t.sfld = "1039285701394875091843750984231570234897"
 
+import std/streams
+
 suite "`trait`":
   test "template annotations":
-    template Eq(arg1: string, arg2: string) {.pragma.}
+    template Eq() {.pragma.}
+    template XmlIO() {.pragma.}
+    template Attr() {.pragma.}
 
-    type EqUser = object
-      fld {.Eq("123", "123").}: int
+    type
+      EqUser {.Eq, XmlIO.} = object
+        case a: bool
+          of true:
+            fld {.Attr.}: int
 
-    storeTraits(EqUser, commonDerives)
-    echo EqUser().fld.hasCustomPragma2(Eq)
-    echo EqUser().fld.getCustomPragmaVal2(Eq)
+          of false:
+            fld2: float
+            field2: string
+
+
+    storeTraits(EqUser)
+
+    proc writeXml(stream: Stream, target: EqUser) =
+      genXmlWriter(EqUser, stream, target)

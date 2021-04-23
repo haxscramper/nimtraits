@@ -13,8 +13,9 @@ import std/[macros, strformat, options, sequtils, sugar, strutils, tables]
 #      transformations.
 
 type
-  TraitObject* = ObjectDecl[NimNode, NPragma]
-  TraitField* = ObjectField[NimNode, NPragma]
+  TraitObject* = ObjectDecl[NimNode]
+  TraitField* = ObjectField[NimNode]
+  TraitPath* = ObjectPath[NimNode]
 
   DeriveParams* = object
     exported*: bool
@@ -38,7 +39,7 @@ func excl*(lhs: var seq[string], rhs: seq[string]) =
 const internalPrefix*: string = "impl_"
 
 func getApiName*(fld: TraitField): string =
-  iflet (fname = fld.annotation.getElem("name")):
+  iflet (fname = fld.pragma.getElem("name")):
     fname.expectKind nnkCall
     fname[1].strVal
   else:
@@ -66,7 +67,7 @@ func asInternal*(fld: TraitField): string =
 var defaultMap {.compiletime.}: Table[string, TraitObject]
 
 macro storeDefaults*(obj: untyped): untyped =
-  let parsed: TraitObject = parseObject(obj, parseNimPragma)
+  let parsed: TraitObject = parseObject(obj)
   defaultMap[parsed.name.head] = parsed
   result = parsed.toNNode()
 
@@ -83,9 +84,9 @@ macro derive*(
       assertNodeKind(obj, {nnkTypeDef})
       case obj[2].kind:
         of nnkObjectTy:
-          var obj: TraitObject = parseObject(obj, parseNimPragma)
-          if obj.annotation.isSome():
-            for annot in obj.annotation.get().elements:
+          var obj: TraitObject = parseObject(obj)
+          if obj.pragma.isSome():
+            for annot in obj.pragma.get().elements:
               if annot.kind == nnkCall and annot[0] == ident("derive"):
                 var deriveNames = collect(newSeq):
                   for trait in annot[1..^1]: # for all traits
@@ -106,8 +107,9 @@ macro derive*(
 
           # Iterate each annotation and filter out ones that were used
           # by `derive`.
-          obj.eachAnnotMut do(pr: var Option[NPragma]) -> void:
+          obj.eachPragmaMut do(pr: var Option[NPragma]) -> void:
             if pr.isSome():
+              pr.get().removeElement("derive") # drop `{.derive(...).}`
               let elems = pr.get().elements
               var pass: seq[NimNode]
 
@@ -115,7 +117,7 @@ macro derive*(
                 of oakObjectToplevel:
                   for elem in elems:
                     if elem.kind == nnkCall and elem[0] == ident("derive"):
-                      discard # drop `{.derive(...).}`
+                      discard
 
                     else:
                       pass.add elem
@@ -136,8 +138,8 @@ macro derive*(
               else:
                 pr = none(NPragma)
 
-          # echo $!obj.toNimNode()
-          restypes.add obj.toNimNode()
+          let impl = obj.toNimNode()
+          restypes.add impl
 
         else:
           restypes.add obj
@@ -145,122 +147,15 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
-proc customPragmaNode(n: NimNode): NimNode =
-  expectKind(n, {nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
-  let
-    typ = n.getTypeInst()
+proc getObjectStructure*(obj: NimNode): TraitObject =
+  defaultMap[obj.signatureHash()]
 
-  echo n.treeRepr()
-  echo typ.treeRepr()
-
-  if typ.kind == nnkBracketExpr and typ.len > 1 and typ[1].kind == nnkProcTy:
-    return typ[1][1]
-  elif typ.typeKind == ntyTypeDesc:
-    let impl = typ[1].getImpl()
-    if impl[0].kind == nnkPragmaExpr:
-      return impl[0][1]
-    else:
-      return impl[0] # handle types which don't have macro at all
-
-  if n.kind == nnkSym: # either an variable or a proc
-    let impl = n.getImpl()
-    if impl.kind in RoutineNodes:
-      return impl.pragma
-    elif impl.kind == nnkIdentDefs and impl[0].kind == nnkPragmaExpr:
-      return impl[0][1]
-    else:
-      let timpl = typ.getImpl()
-      if timpl.len>0 and timpl[0].len>1:
-        return timpl[0][1]
-      else:
-        return timpl
-
-  if n.kind in {nnkDotExpr, nnkCheckedFieldExpr}:
-    let name = $(if n.kind == nnkCheckedFieldExpr: n[0][1] else: n[1])
-    let typInst = getTypeInst(if n.kind == nnkCheckedFieldExpr or n[0].kind == nnkHiddenDeref: n[0][0] else: n[0])
-    echo typInst.treeRepr()
-    var typDef = getImpl(if typInst.kind == nnkVarTy: typInst[0] else: typInst)
-    while typDef != nil:
-      echo "----"
-      echo typInst.treeRepr()
-      typDef.expectKind(nnkTypeDef)
-      let typ = typDef[2]
-      typ.expectKind({nnkRefTy, nnkPtrTy, nnkObjectTy})
-      let isRef = typ.kind in {nnkRefTy, nnkPtrTy}
-      if isRef and typ[0].kind in {nnkSym, nnkBracketExpr}: # defines ref type for another object(e.g. X = ref X)
-        typDef = getImpl(typ[0])
-      else: # object definition, maybe an object directly defined as a ref type
-        let
-          obj = (if isRef: typ[0] else: typ)
-
-        echo "----"
-        echo typDef.treeRepr()
-        var identDefsStack = newSeq[NimNode](obj[2].len)
-        for i in 0..<identDefsStack.len: identDefsStack[i] = obj[2][i]
-        while identDefsStack.len > 0:
-          var identDefs = identDefsStack.pop()
-          if identDefs.kind == nnkRecCase:
-            identDefsStack.add(identDefs[0])
-            for i in 1..<identDefs.len:
-              let varNode = identDefs[i]
-              # if it is and empty branch, skip
-              if varNode[0].kind == nnkNilLit: continue
-              if varNode[1].kind == nnkIdentDefs:
-                identDefsStack.add(varNode[1])
-              else: # nnkRecList
-                for j in 0 ..< varNode[1].len:
-                  identDefsStack.add(varNode[1][j])
-
-          else:
-            for i in 0 .. identDefs.len - 3:
-              let varNode = identDefs[i]
-              if varNode.kind == nnkPragmaExpr:
-                var varName = varNode[0]
-                if varName.kind == nnkPostfix:
-                  # This is a public field. We are skipping the postfix *
-                  varName = varName[1]
-                if eqIdent($varName, name):
-                  return varNode[1]
-
-        if obj[1].kind == nnkOfInherit: # explore the parent object
-          typDef = getImpl(obj[1][0])
-        else:
-          typDef = nil
-
-const nnkPragmaCallKinds = {nnkExprColonExpr, nnkCall, nnkCallStrLit}
-
-
-macro hasCustomPragma2*(n: typed, cp: typed{nkSym}): untyped =
-  let pragmaNode = customPragmaNode(n)
-  for p in pragmaNode:
-    if (p.kind == nnkSym and p == cp) or
-        (p.kind in nnkPragmaCallKinds and p.len > 0 and p[0].kind == nnkSym and p[0] == cp):
-      return newLit(true)
-  return newLit(false)
-
-macro getCustomPragmaVal2*(n: typed, cp: typed{nkSym}): untyped =
-  result = nil
-  let pragmaNode = customPragmaNode(n)
-  for p in pragmaNode:
-    if p.kind in nnkPragmaCallKinds and p.len > 0 and p[0].kind == nnkSym and p[0] == cp:
-      if p.len == 2:
-        result = p[1]
-      else:
-        let def = p[0].getImpl[3]
-        result = newTree(nnkPar)
-        for i in 1 ..< def.len:
-          let key = def[i][0]
-          let val = p[i]
-          result.add newTree(nnkExprColonExpr, key, val)
-      break
-
-  if result.kind == nnkEmpty:
-    error(n.repr & " doesn't have a pragma named " & cp.repr())
-
-macro storeTraits*(obj: typed, conf: static[DeriveConf]) =
-  let parsed: TraitObject = parseObject(obj, parseNimPragma)
+proc setObjectStructure*(obj: NimNode) =
+  let parsed: TraitObject = parseObject(obj, false)
   defaultMap[obj.signatureHash()] = parsed
-  echo parsed.toNNode().treeRepr()
+
+macro storeTraits*(obj: typed) =
+  setObjectStructure(obj)
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -295,18 +190,16 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
     for apiName, fldType in sameNames:
       # Iterate over all pats; find all that can return result
       var resPaths: seq[tuple[
-        path: NObjectPath[NPragma],
+        path: NObjectPath,
         fld: TraitField,
         immut: bool]] = @[]
 
       discard self.eachPath(obj) do(
-        path: NObjectPath[NPragma], flds: seq[TraitField]) -> NimNode:
+        path: NObjectPath, flds: seq[TraitField]) -> NimNode:
         for fld in flds:
           if fld.getApiName() == apiName:
-            # debugecho fld.getInternalName(), " is named as ", fld.getApiName()
             resPaths.add (path, fld, fld.markedAs("immut"))
 
-      # debugecho resPaths.len, " fields have the same api name ", apiName
       block: # getter builder
         # for each possible path generate 'isOnPath' predicate
         var resGets: seq[NimNode]
@@ -592,7 +485,7 @@ func makeValidateImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
 
 
   obj.eachFieldMut do(fld: var TraitField):
-    iflet (check = fld.annotation.getElem("check")):
+    iflet (check = fld.pragma.getElem("check")):
       let checks = check.getChecks(fld)
       fld.renameInternal()
       let fldId = ident fld.getInternalName()
@@ -627,8 +520,8 @@ func makeValidateImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
         it.impl = newReturn(newDotExpr(ident "self", fldId))
 
   let self = ident "self"
-  let total = self.eachCase(obj) do(fld: NObjectField[NPragma]) -> NimNode:
-    iflet (check = fld.annotation.getElem("check")):
+  let total = self.eachCase(obj) do(fld: NObjectField) -> NimNode:
+    iflet (check = fld.pragma.getElem("check")):
       let
         checks = check.getChecks(fld)
         fldId = ident fld.name
@@ -694,10 +587,10 @@ func makeXmlReprImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
 #====================  Default set of trait builders  ====================#
 
 macro initEqImpl*(T: typed): untyped =
-  parseObject(T, parseNimPragma).makeEqImplBody(DeriveParams())
+  parseObject(T).makeEqImplBody(DeriveParams())
 
 macro initHashImpl*(T: typed): untyped =
-  parseObject(T, parseNimPragma).makeHashImplBody(DeriveParams())
+  parseObject(T).makeHashImplBody(DeriveParams())
 
 macro initDefaultInitImpl*(
   typeName: static[string], doExport: static[bool] = true):
