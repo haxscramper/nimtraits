@@ -273,7 +273,7 @@ suite "`trait`":
 
     type
       En1 = enum e1First, e1FirstCopy1, e1FirstCopy2, e1Second
-      En2 = enum e2First, e2Second
+      En2 = enum e2First, e2Second, e2SecondCopy
       En3 = enum e3First, e3Second
 
       Obj {.Eq, XmlIO.} = object
@@ -285,6 +285,10 @@ suite "`trait`":
 
                of e2Second:
                  f12second: string
+                 f12secondDouble: string
+
+               of e2SecondCopy:
+                 discard
 
           of e1Second:
             case k3: En3

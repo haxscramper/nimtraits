@@ -4,7 +4,27 @@ import hmisc/helpers
 
 import hpprint
 
+proc isFinalBranch*[N](field: ObjectField[N]): bool =
+  if not field.isKind:
+    return true
+
+  else:
+    result = true
+    for branch in items(field.branches):
+      for field in branch.flds:
+        if field.isKind:
+          return false
+
+
 proc newIdent*(str: string): NimNode = newIdentNode(str)
+proc newVar*[N](name: string, varType: NType[N], default: N = nil): N =
+  newNTree[N](nnkVarSection, newNTree[N](
+    nnkIdentDefs,
+    newNIdent[N](name),
+    toNNode[N](varType),
+    (if isNil(default): newEmptyNNode[N]() else: default)
+  ))
+
 proc dotField*[N](self: N, field: ObjectField[N]): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](field.name))
 
@@ -144,34 +164,42 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
     kinds = impl.getKindFields()
     self = ident("self")
 
-  let writeKind = self.eachCase(impl) do(field: TraitField) -> NimNode:
-    if field.isKind:
-      result = newCall(
-        "writeAttr", stream, self.dotField(field),
-        newCall("$", self.dotField(field)))
+  # let writeKind = self.eachCase(impl) do(field: TraitField) -> NimNode:
+  #   if field.isKind:
+  #     result = newCall(
+  #       "writeAttr", stream, self.dotField(field),
+  #       newCall("$", self.dotField(field)))
 
 
-  echo writeKind.toStrLit()
+  # echo writeKind.toStrLit()
 
-  let writeAttrs = eachCase(self, impl) do(field: TraitField) -> NimNode:
-    if field.isTaggedWith("Attr"):
-      result = newCall(
-        "writeAttr", stream, self.dotField(field),
-        newCall("$", self.dotField(field)))
+  # let writeAttrs = eachCase(self, impl) do(field: TraitField) -> NimNode:
+  #   if field.isTaggedWith("Attr"):
+  #     result = newCall(
+  #       "writeAttr", stream, self.dotField(field),
+  #       newCall("$", self.dotField(field)))
 
-  echo writeAttrs.toStrLit()
+  # echo writeAttrs.toStrLit()
 
-  let writeBody = eachCase(self, impl) do(field: TraitField) -> NimNode:
-    if not field.isTaggedWith("Attr"):
-      result = newcall("writeXml", stream, self.dotField(field))
+  # let writeBody = eachCase(self, impl) do(field: TraitField) -> NimNode:
+  #   if not field.isTaggedWith("Attr"):
+  #     result = newcall("writeXml", stream, self.dotField(field))
 
-  echo writeBody.toStrLit()
+  # echo writeBody.toStrLit()
 
   let branches2 = impl.mapSelfCase(newIdent(field.name)):
     var res = newStmtList()
-    for kind in path:
-      res.add newCall("print", newIdent(kind.name))
+    if field.isKind:
+      res.add newVar(field.name, field.fldType)
+      res.add newCall("load", newIdent(field.name))
 
-    res.add newCall("load", newIdent(field.name))
+    if field.isFinalBranch():
+      var call = newCall("new" & impl.name.head)
+      for kind in path:
+        call.add newIdent(kind.name)
+
+      res.add call
+
+    res
 
   echo branches2.toStrLit()
