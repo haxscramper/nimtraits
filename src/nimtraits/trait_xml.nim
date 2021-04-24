@@ -20,27 +20,24 @@ proc newObjectPathElem*[N](
       isElse: false, kindField: field,
       ofValue: normalizeSet(branch.ofValue))
 
-type
-  KindFields[N] = seq[ObjectField[N]]
-  NKindFields* = KindFields[NimNode]
 
 proc mapBranches*(
-    field: NObjectField, parent: NKindFields,
-    caseExpr: proc(kinds: NKindFields): NimNode,
-    mapBranch: proc(kinds: NKindFields, branch: NObjectBranch): NimNode
+    field: NObjectField, self: NimNode, parent: NObjectPath,
+    caseExpr: proc(path: NObjectPath): NimNode,
+    mapBranch: proc(path: NObjectPath, branch: NObjectBranch): NimNode
   ): NimNode =
 
   if field.isKind:
     result = nnkCaseStmt.newTree(caseExpr(parent))
     for branch in field.branches:
-      let thisPath = parent & field
+      let thisPath = parent & newObjectPathElem(field, branch)
       let cbRes = mapBranch(thisPath, branch).nilToDiscard()
 
       var branchBody = newStmtList()
       for field in branch.flds:
         if field.isKind:
-          branchBody.add mapBranches(
-            field, thisPath, caseExpr, mapBranch)
+          branchBody.add field.mapBranches(
+            self, thisPath, caseExpr, mapBranch)
 
       if branch.isElse:
         result.add nnkElse.newTree(newStmtList(cbRes, branchBody))
@@ -51,20 +48,21 @@ proc mapBranches*(
 
 
 proc mapBranches*(
+    self: NimNode,
     obj: NObjectDecl,
-    caseExpr: proc(kinds: NKindFields): NimNode,
-    mapBranch: proc(kinds: NKindFields, branch: NObjectBranch): NimNode
+    caseExpr: proc(path: NObjectPath): NimNode,
+    mapBranch: proc(path: NObjectPath, branch: NObjectBranch): NimNode
   ): NimNode =
   result = newStmtList()
   for field in items(obj.fields):
     if field.isKind:
-      result.add field.mapBranches(@[field], caseExpr, mapBranch)
+      result.add field.mapBranches(self, @[], caseExpr, mapBranch)
 
 template mapSelfBranches*(obj: NObjectDecl, expr, body: untyped): untyped =
   mapBranches(
     ident "self", obj,
-    proc(path {.inject.}: NKindFields): NimNode = expr,
-    proc(path {.inject.}: NKindFields,
+    proc(path {.inject.}: NObjectPath): NimNode = expr,
+    proc(path {.inject.}: NObjectPath,
          branch {.inject.}: NObjectBranch): NimNode = body
   )
 
