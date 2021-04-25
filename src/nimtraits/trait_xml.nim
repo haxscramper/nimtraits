@@ -218,6 +218,18 @@ template mapItGroups*(objectDecl: NObjectDecl, expr, body: untyped): untyped =
          group {.inject.}: seq[NObjectField]): NimNode = body
   )
 
+proc flatFields*[N](decl: ObjectDecl[N]): seq[ObjectField[N]] =
+  proc aux(field: ObjectField[N]): seq[ObjectField[N]] =
+    result.add field
+    if field.isKind:
+      for branch in field.branches:
+        for field in branch.flds:
+          result.add aux(field)
+
+
+  for field in decl.flds:
+    result.add aux(field)
+
 
 macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
   let
@@ -289,3 +301,6 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
     res
 
   echo loader.toStrLit()
+
+  for field in impl.flatFields():
+    echo field.name
