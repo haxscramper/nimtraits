@@ -15,6 +15,14 @@ proc isFinalBranch*[N](field: ObjectField[N]): bool =
         if field.isKind:
           return false
 
+proc fixEmptyStmt*(node: NimNode): NimNode =
+  if isEmptyNode(node):
+    newDiscardStmt()
+
+  else:
+    node
+
+
 
 proc newIdent*(str: string): NimNode = newIdentNode(str)
 proc newVar*[N](name: string, varType: NType[N], default: N = nil): N =
@@ -27,6 +35,31 @@ proc newVar*[N](name: string, varType: NType[N], default: N = nil): N =
 
 proc dotField*[N](self: N, field: ObjectField[N]): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](field.name))
+
+proc dotField*[N](self: N, name: string): N =
+  newNTree[N](nnkDotExpr, self, newNIdent[N](name))
+
+proc addBranchBody*[N](main: var N, branch: ObjectBranch[N], body: N) =
+  let branchBody = fixEmptyStmt(body)
+
+  if branch.isElse:
+    main.add nnkElse.newTree(branchBody)
+
+  else:
+    main.add nnkOfBranch.newTree(
+      normalizeSet(branch.ofValue), branchBody)
+
+
+template mapItKindFields*(branch: NObjectBranch, body: untyped): untyped =
+  var branchBody = newStmtList()
+  for field {.inject.} in branch.flds:
+    if field.isKind:
+      branchBody.add body
+
+  branchBody
+
+
+
 
 proc newObjectPathElem*[N](
     field: ObjectField[N], branch: OBjectBranch[N]): ObjectPathElem[N] =
@@ -46,7 +79,8 @@ type
   NKindFields = KindFields[NimNode]
 
 proc mapBranches*(
-    field: NObjectField, parent: seq[ObjectField[NimNode]],
+    field: NObjectField,
+    parent: seq[ObjectField[NimNode]],
     caseExpr: proc(path: seq[ObjectField[NimNode]]): NimNode,
     mapBranch: proc(path: seq[ObjectField[NimNode]], branch: NObjectBranch): NimNode
   ): NimNode =
@@ -55,20 +89,12 @@ proc mapBranches*(
     result = nnkCaseStmt.newTree(caseExpr(parent))
     for branch in field.branches:
       let thisPath = parent & field # newObjectPathElem(field, branch)
-      let cbRes = mapBranch(thisPath, branch).nilToDiscard()
-
-      var branchBody = newStmtList()
-      for field in branch.flds:
-        if field.isKind:
-          branchBody.add field.mapBranches(
-            thisPath, caseExpr, mapBranch)
-
-      if branch.isElse:
-        result.add nnkElse.newTree(newStmtList(cbRes, branchBody))
-
-      else:
-        result.add nnkOfBranch.newTree(
-          normalizeSet(branch.ofValue), newStmtList(cbRes, branchBody))
+      result.addBranchBody(
+        branch,
+        newStmtList(
+          mapBranch(thisPath, branch).fixEmptyStmt(),
+          branch.mapItKindFields(field.mapBranches(
+            thisPath, caseExpr, mapBranch))))
 
 
 proc mapBranches*(
@@ -77,24 +103,17 @@ proc mapBranches*(
     mapBranch: proc(path: seq[ObjectField[NimNode]], branch: NObjectBranch): NimNode
   ): NimNode =
   result = newStmtList()
-  for field in items(obj.fields):
+  for field in items(obj.flds):
     if field.isKind:
       result.add field.mapBranches(@[field], caseExpr, mapBranch)
 
-template mapSelfBranches*(obj: NObjectDecl, expr, body: untyped): untyped =
+template mapItBranches*(obj: NObjectDecl, expr, body: untyped): untyped =
   mapBranches(
     obj,
     proc(path {.inject.}: seq[ObjectField[NimNode]]): NimNode = expr,
     proc(path {.inject.}: seq[ObjectField[NimNode]],
          branch {.inject.}: NObjectBranch): NimNode = body
   )
-
-proc fixEmptyStmt*(node: NimNode): NimNode =
-  if isEmptyNode(node):
-    newDiscardStmt()
-
-  else:
-    node
 
 
 proc mapCase*(
@@ -150,12 +169,55 @@ proc mapCase*(
   for field in objectDecl.flds:
     result.add field.mapCase(@[field], caseExpr, cb)
 
-template mapSelfCase*(objectDecl: NObjectDecl, expr, body: untyped): untyped =
+template mapItCase*(objectDecl: NObjectDecl, expr, body: untyped): untyped =
   mapCase(
     objectDecl,
-    proc(field {.inject.}: NObjectField, path {.inject.}: seq[NObjectField]): NimNode = expr,
-    proc(field {.inject.}: NObjectField, path {.inject.}: seq[NObjectField]): NimNode = body
+    proc(field {.inject.}: NObjectField,
+         path {.inject.}: seq[NObjectField]): NimNode = expr,
+    proc(field {.inject.}: NObjectField,
+         path {.inject.}: seq[NObjectField]): NimNode = body
   )
+
+
+proc mapGroups*(
+    field: NObjectField,
+    parent: seq[ObjectField[NimNode]],
+    caseExpr: proc(path: seq[ObjectField[NimNode]]): NimNode,
+    mapGroup: proc(path: seq[ObjectField[NimNode]], group: seq[NObjectField]): NimNode
+  ): NimNode =
+
+  if field.isKind:
+    let thisPath = parent & field
+    result = nnkCaseStmt.newTree(caseExpr(thisPath))
+    for branch in field.branches:
+      result.addBranchBody(
+        branch,
+        newStmtList(
+          mapGroup(thisPath, branch.flds).fixEmptyStmt(),
+          mapItKindFields(branch, field.mapGroups(
+            thisPath, caseExpr, mapGroup))))
+
+
+proc mapGroups*(
+    obj: NObjectDecl,
+    caseExpr: proc(path: seq[ObjectField[NimNode]]): NimNode,
+    mapGroup: proc(path: seq[ObjectField[NimNode]], group: seq[NObjectField]): NimNode
+  ): NimNode =
+
+  result = newStmtList mapGroup(@[], obj.flds)
+  for fld in items(obj.flds):
+    if fld.isKind:
+      result.add fld.mapGroups(@[], caseExpr, mapGroup)
+
+template mapItGroups*(objectDecl: NObjectDecl, expr, body: untyped): untyped =
+  mapGroups(
+    objectDecl,
+    proc(path {.inject.}: seq[NObjectField]): NimNode = expr,
+
+    proc(path {.inject.}: seq[NObjectField],
+         group {.inject.}: seq[NObjectField]): NimNode = body
+  )
+
 
 macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
   let
@@ -187,7 +249,7 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
 
   # echo writeBody.toStrLit()
 
-  let branches2 = impl.mapSelfCase(newIdent(field.name)):
+  let branches1 = impl.mapItCase(newIdent(field.name)):
     var res = newStmtList()
     if field.isKind:
       res.add newVar(field.name, field.fldType)
@@ -202,4 +264,28 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
 
     res
 
+  let branches2 = impl.mapItGroups(newIdent(path[^1].name)):
+    var res = newStmtList()
+    if path.len > 0 and path[^1].isFinalBranch():
+      var call = newCall("new" & impl.name.head)
+      for field in path:
+        call.add newIdent(field.name)
+
+      res.add newAsgn(newIdent("target"), call)
+
+    # for field in group:
+    #   res.add newCall("load", newIdent(field.name))
+
+    res
+
   echo branches2.toStrLit()
+
+  let loader = impl.mapItGroups(dotField(target, path[^1].name)):
+    var res = newStmtList()
+    for field in group:
+      if not field.isKind:
+        res.add newCall("load", newIdent(field.name))
+
+    res
+
+  echo loader.toStrLit()
