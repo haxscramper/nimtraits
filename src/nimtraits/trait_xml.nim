@@ -36,11 +36,14 @@ proc newVar*[N](name: string, varType: NType[N], default: N = nil): N =
 proc dotField*[N](self: N, field: ObjectField[N]): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](field.name))
 
+proc dotField*[N](self: string, field: ObjectField[N]): N =
+  newNTree[N](nnkDotExpr, newNIdent[N](self), newNIdent[N](field.name))
+
 proc dotField*[N](self: N, name: string): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](name))
 
-proc newSet*[N](elements: varargs[N]): N =
-  newNTree[N](nnkCurly, elements)
+proc newSet*[N](elements: varargs[N]): N = newNTree[N](nnkCurly, elements)
+proc newDot*[N](lhs, rhs: N): N = newNTree[N](nnkCurly, lhs, rhs)
 
 proc newExprColon*[N](lhs, rhs: N): N =
   newNTree[N](nnkExprColonExpr, lhs, rhs)
@@ -251,7 +254,7 @@ proc mapPath*(
     caseExpr: proc(path: seq[NObjectField]): NimNode,
     cb: proc(path: NObjectPath, fields: seq[NObjectField]): NimNode
   ): NimNode =
-  result = newStmtList cb(@[], obj.flds)
+  result = newStmtList cb(@[], obj.flds).fixEmptyStmt()
   for fld in items(obj.flds):
     if fld.isKind:
       result.add fld.mapPath(@[fld], @[], caseExpr, cb)
@@ -291,7 +294,9 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
     kinds = impl.getKindFields()
 
 
-  let branches2 = impl.mapItGroups(newIdent(path[^1].name)):
+  let branches2 = impl.mapItGroups(
+    newCall("asKind" & path[^1].fldType.head, newIdent("stream"))
+  ):
     var res = newStmtList()
     if path.len > 0 and path[^1].isFinalBranch():
       var call = newCall("new" & impl.name.head)
@@ -300,6 +305,9 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
 
       res.add newAsgn(newIdent("target"), call)
 
+    elif path.len > 0:
+      res.add newCall("next", newIdent("stream"))
+
     res
 
   echo branches2.toStrLit()
@@ -307,25 +315,36 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
   var loader = newCaseStmt(newCall("name", stream))
   for (field, path) in impl.getFlatFieldsPath():
     if not field.isKind:
-      loader.addBranch(
-        field.name,
-        newStmtList(
-          onPath(target, path),
-          newCall("load", dotField(target, field))))
+      loader.addBranch(field.name, newCall("load", dotField(target, field)))
 
-  # echo loader.toStrLit()
+  echo loader.toStrLit()
 
   let newObj = impl.mapItPath(newIdent(path[^1].name)):
     if path.len == 2 and path[^1].kindField.isFinalBranch():
-      var res = newStmtList()
+      var res = newCaseStmt(newIdent(path[0].kindField.name))
       for v1 in path[0].ofValue:
         for v2 in path[1].ofValue:
           var newCall = nnkObjConstr.newTree(newIdent(impl.name.head))
           newCall.add newExprColon(newIdent(path[0].kindField.name), v1)
           newCall.add newExprColon(newIdent(path[1].kindField.name), v2)
 
-          res.add newAsgn(newIdent("result"), newCall)
+          res.addBranch(v1, newAsgn(newIdent("result"), newCall))
+
+      res.addBranch(newDiscardStmt())
 
       return res
 
-  echo newObj
+  # echo newObj
+
+  let init = impl.mapItGroups("result".dotField(path[^1])):
+    var res = newStmtList()
+    for field in group:
+      if field.value.isSome():
+        res.add newAsgn(newIdent("result").dotField(field), field.value.get())
+
+    res
+
+  # echo init
+
+
+  
