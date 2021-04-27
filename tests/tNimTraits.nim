@@ -306,11 +306,14 @@ suite "`trait`":
 
     storeTraits(Obj, constValue, constValue2)
 
-    # proc newObj(): Obj =
-    #   genNewObject(Obj)
+    proc newObj(
+        k1: En1 = e1First, k2: En2 = e2Second, k3: En3 = e3First
+      ): Obj =
 
-    proc writeXml(stream: XmlWriter, target: Obj) =
+      genNewObject(Obj)
+
+    proc writeXml(stream: var XmlWriter, target: Obj) =
       genXmlWriter(Obj, target, stream, "item")
 
-    let writer = newXmlWriter(stdout.newFileStream())
-    writer.writeXml(Obj())
+    var writer = newXmlWriter(stdout.newFileStream())
+    writer.writeXml(newObj())
