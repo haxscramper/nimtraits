@@ -33,13 +33,13 @@ proc newVar*[N](name: string, varType: NType[N], default: N = nil): N =
     (if isNil(default): newEmptyNNode[N]() else: default)
   ))
 
-proc dotField*[N](self: N, field: ObjectField[N]): N =
+proc newDot*[N](self: N, field: ObjectField[N]): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](field.name))
 
-proc dotField*[N](self: string, field: ObjectField[N]): N =
+proc newDot*[N](self: string, field: ObjectField[N]): N =
   newNTree[N](nnkDotExpr, newNIdent[N](self), newNIdent[N](field.name))
 
-proc dotField*[N](self: N, name: string): N =
+proc newDot*[N](self: N, name: string): N =
   newNTree[N](nnkDotExpr, self, newNIdent[N](name))
 
 proc newSet*[N](elements: varargs[N]): N = newNTree[N](nnkCurly, elements)
@@ -208,6 +208,8 @@ proc mapGroups*(
           mapItKindFields(branch, field.mapGroups(
             thisPath, caseExpr, mapGroup))))
 
+  return fixEmptyStmt(result)
+
 
 proc mapGroups*(
     obj: NObjectDecl,
@@ -219,6 +221,8 @@ proc mapGroups*(
   for fld in items(obj.flds):
     if fld.isKind:
       result.add fld.mapGroups(@[], caseExpr, mapGroup)
+
+  return fixEmptyStmt(result)
 
 template mapItGroups*(objectDecl: NObjectDecl, expr, body: untyped): untyped =
   mapGroups(
@@ -287,7 +291,7 @@ proc getFlatFieldsPath*[N](decl: ObjectDecl[N]):
     result.add aux(@[], field)
 
 
-macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
+macro genNewObject*(obj: typedesc, stream, target: untyped) =
   let
     stream = stream.copyNimNode()
     impl = getObjectStructure(obj)
@@ -315,7 +319,7 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
   var loader = newCaseStmt(newCall("name", stream))
   for (field, path) in impl.getFlatFieldsPath():
     if not field.isKind:
-      loader.addBranch(field.name, newCall("load", dotField(target, field)))
+      loader.addBranch(field.name, newCall("load", newDot(target, field)))
 
   echo loader.toStrLit()
 
@@ -336,15 +340,103 @@ macro genXmlWriter*(obj: typedesc, stream, target: untyped) =
 
   # echo newObj
 
-  let init = impl.mapItGroups("result".dotField(path[^1])):
+  let init = impl.mapItGroups("result".newDot(path[^1])):
     var res = newStmtList()
     for field in group:
       if field.value.isSome():
-        res.add newAsgn(newIdent("result").dotField(field), field.value.get())
+        res.add newAsgn(newIdent("result").newDot(field), field.value.get())
 
     res
 
   # echo init
 
+import std/streams
 
-  
+type
+  XmlWriter* = object
+    stream: Stream
+
+using writer: XmlWriter
+
+proc newXmlWriter*(stream: Stream): XmlWriter =
+  XmlWriter(stream: stream)
+
+proc xmlStart*(writer; elem: string) = writer.stream.write("<", elem, ">")
+proc xmlEnd*(writer; elem: string) = writer.stream.write("</", elem, ">")
+proc xmlOpen*(writer; elem: string) = writer.stream.write("<", elem)
+proc xmlClose*(writer) = writer.stream.write(">")
+
+proc xmlAttribute*(writer; key, value: string) =
+  writer.stream.write(key, "=\"", value, "\"")
+
+proc toXmlString*[T](item: T): string =
+  discard
+
+
+proc writeXml*(writer: XmlWriter, value: string, tag: string) =
+  writer.xmlStart(tag)
+  writer.stream.write(value)
+  writer.xmlEnd(tag)
+
+proc writeXml*[T](writer: XmlWriter, values: seq[T], tag: string) =
+  mixin writeXml
+  for it in values:
+    writer.xmlStart($typeof(it))
+    writer.writeXml(it, tag)
+    writer.xmlEnd($typeof(it))
+
+proc writeXml*[E: enum](writer: XmlWriter, value: E, tag: string) =
+  writer.xmlAttribute(tag, $value)
+
+
+
+macro genXmlWriter*(obj: typedesc, input, stream, tag: untyped) =
+
+  let
+    input = input.copyNimNode()
+    stream = stream.copyNimNode()
+    impl = getObjectStructure(obj)
+
+  result = newStmtList()
+  result.add newCall("xmlOpen", stream, tag)
+
+  let attrWrite = impl.mapItGroups(input.newDot(path[^1].name)):
+    var res = newStmtList()
+    for field in group:
+      if field.isKind or field.isMarkedWith("Attr"):
+        res.add newCall(
+          "xmlAttribute", stream, newLit(field.name),
+          newCall("toXmlString", input.newDot(field)))
+
+    res
+
+  result.add attrWrite
+  result.add newCall("xmlClose", stream)
+
+  let fieldWrite = impl.mapItGroups(input.newDot(path[^1].name)):
+    var res = newStmtList()
+    for field in group:
+      if not (field.isKind or field.isMarkedWith("Attr")) and field.isExported:
+        if field.fldType.kind == ntkNamedTuple:
+          res.add newCall("xmlStart", stream, newLit(field.name))
+          for item in field.fldType.arguments:
+            for ident in item.idents:
+              res.add newCall(
+                "writeXml",
+                stream,
+                input.newDot(field).newDot(ident),
+                newLit(ident.strVal())
+              )
+
+          res.add newCall("xmlEnd", stream, newLit(field.name))
+
+        else:
+          res.add newCall(
+            "writeXml", stream, input.newDot(field), newLit(field.name))
+    res
+
+  result.add fieldWrite
+  result.add newCall("xmlEnd", stream, tag)
+
+
+  echo result

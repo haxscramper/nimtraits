@@ -1,8 +1,9 @@
-import hnimast, hnimast/obj_field_macros
+import hnimast
 import hmisc/hexceptions
 import hmisc/algo/halgorithm
 import hmisc/macros/iflet
 import hmisc/hdebug_misc
+export hnimast
 
 {.push warning[UnusedImport]:off.}
 
@@ -64,15 +65,6 @@ func asInternal*(fld: TraitField): string =
 #   fld.markedAs("check")
 
 #========================  derive implementation  ========================#
-
-var defaultMap {.compiletime.}: Table[string, TraitObject]
-
-macro storeDefaults*(obj: untyped): untyped =
-  let parsed: TraitObject = parseObject(obj)
-  defaultMap[parsed.name.head] = parsed
-  result = parsed.toNNode()
-
-  # echo result.toStrLit()
 
 macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
@@ -151,23 +143,70 @@ macro derive*(
     result.add nnkTypeSection.newTree(restypes)
   result.add nnkStmtList.newTree(traitImpls)
 
+var defaultMap {.compiletime.}: Table[string, TraitObject]
+
+macro storeDefaults*(obj: untyped): untyped =
+  let parsed: TraitObject = parseObject(obj)
+  defaultMap[parsed.name.head] = parsed
+  result = parsed.toNNode()
+
+
+
+var objectImplMap {.compiletime.}: Table[string, TraitObject]
+var enumImplMap {.compiletime.}: Table[string, NEnumDecl]
+
 proc getObjectStructure*(obj: NimNode): TraitObject =
-  defaultMap[obj.signatureHash()]
+  let hash = obj.signatureHash()
+  if hash in objectImplMap:
+    objectImplMap[hash]
+
+  else:
+    raiseArgumentError(
+      "Cannot get object structure for node " &
+      obj.toStrLit().strVal() &
+      " - not recorded in object impl map"
+    )
+
+proc getEnumStructure*(obj: NimNode): NEnumDecl =
+  enumImplMap[obj.signatureHash()]
+
+proc isObject*(node: NimNode): bool =
+  case node.kind:
+    of nnkObjectTy:
+      true
+
+    of nnkEnumTy:
+      false
+
+    of nnkRefTy, nnkPtrTy:
+      node[0].kind in {nnkObjectTy}
+
+    of nnkTypeDef:
+      isObject(node[2])
+
+    else:
+      raiseImplementKindError(node)
 
 proc setObjectStructure*(obj: NimNode, consts: seq[NimNode]) =
-  var parsed: TraitObject = parseObject(obj, false, consts)
-  if parsed.hasPragma("defaultImpl"):
-    let pragma = parsed.getPragmaArgs("defaultImpl")
-    for field in iterateFields(parsed):
-      for arg in pragma[0]:
-        if field.name == arg[0].strVal():
-          field.value = some arg[1]
+  let impl = getTypeImplBody(obj, false)
+  if impl.isObject():
+    var parsed: TraitObject = parseObject(impl, false, consts)
+    if parsed.hasPragma("defaultImpl"):
+      let pragma = parsed.getPragmaArgs("defaultImpl")
+      for field in iterateFields(parsed):
+        for arg in pragma[0]:
+          if field.name == arg[0].strVal():
+            field.value = some arg[1]
 
-  defaultMap[obj.signatureHash()] = parsed
+    objectImplMap[obj.signatureHash()] = parsed
+
+
+  else:
+    var parsed = parseEnum(impl)
+    enumImplMap[obj.signatureHash()] = parsed
 
 macro storeTraitsImpl*(obj: typed, consts: varargs[typed]) =
   setObjectStructure(obj, toSeq(consts))
-
 
 macro storeTraits*(obj: untyped, consts: varargs[untyped]) =
   # Generate call to store all constants in `(name, node)` plist
@@ -183,8 +222,9 @@ macro Default*(obj: untyped): untyped =
     case node.kind:
       of nnkIdentDefs:
         if node[2].kind != nnkEmpty:
+          let name = node.parseIdentName().name
           defaulted.add nnkTupleConstr.newTree(
-            newLit(node[0].strVal()), node[2])
+            newLit(name.strVal()), node[2])
 
           node[2] = newEmptyNode()
 
@@ -223,7 +263,7 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
   block: # generate list of fields with the same public name; store
          # their types
     obj.eachFieldMut do(fld: var TraitField):
-      if fld.markedAs("name"):
+      if fld.isMarkedWith("name"):
         let fname = fld.getApiName()
         if fname notin sameNames:
           sameNames[fname] = fld.fldType
@@ -231,7 +271,7 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
           # TODO better error message
           assert fld.fldType == sameNames[fname]
 
-        fld.exported = false
+        fld.isExported = false
         fld.renameInternal()
 
   let
@@ -252,7 +292,7 @@ func makeGetSetImpl*(obj: var TraitObject, params: DeriveParams): NimNode =
         path: NObjectPath, flds: seq[TraitField]) -> NimNode:
         for fld in flds:
           if fld.getApiName() == apiName:
-            resPaths.add (path, fld, fld.markedAs("immut"))
+            resPaths.add (path, fld, fld.isMarkedWith("immut"))
 
       block: # getter builder
         # for each possible path generate 'isOnPath' predicate
@@ -755,3 +795,6 @@ const commonDerives* = DeriveConf(
     )
   ]
 )
+
+
+template Attr*() {.pragma.}

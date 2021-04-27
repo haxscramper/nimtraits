@@ -286,11 +286,11 @@ suite "`trait`":
           of e1First .. e1FirstCopy2:
              case k2: En2
                of e2First:
-                 f12first: string = "test"
+                 f12first*: string = "test"
 
                of e2Second:
-                 f12second: string = "test2"
-                 f12secondDouble: string = "test23"
+                 f12second*: string = "test2"
+                 f12secondDouble*: string = "test23"
 
                of constValue, e2SecondCopy3:
                  discard
@@ -298,13 +298,19 @@ suite "`trait`":
           of e1Second:
             case k3: En3
               of e3First:
-                f13first: string = "test3"
+                f13first* {.Attr.}: string = "test3"
 
               of constValue2:
-                f13second: string = "testf13"
+                f13second*: string = "testf13"
 
 
     storeTraits(Obj, constValue, constValue2)
 
-    proc writeXml(stream: Stream, target: Obj) =
-      genXmlWriter(Obj, stream, target)
+    # proc newObj(): Obj =
+    #   genNewObject(Obj)
+
+    proc writeXml(stream: XmlWriter, target: Obj) =
+      genXmlWriter(Obj, target, stream, "item")
+
+    let writer = newXmlWriter(stdout.newFileStream())
+    writer.writeXml(Obj())
