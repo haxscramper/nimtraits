@@ -2,6 +2,7 @@ import hnimast, hnimast/obj_field_macros
 import hmisc/hexceptions
 import hmisc/algo/halgorithm
 import hmisc/macros/iflet
+import hmisc/hdebug_misc
 
 {.push warning[UnusedImport]:off.}
 
@@ -71,9 +72,12 @@ macro storeDefaults*(obj: untyped): untyped =
   defaultMap[parsed.name.head] = parsed
   result = parsed.toNNode()
 
+  # echo result.toStrLit()
+
 macro derive*(
   conf: static[DeriveConf], typesection: untyped): untyped =
   # TODO provide compilation errors on unknown `Derive` annotations
+  startHaxComp()
   var traitImpls: seq[NimNode]
   result = newStmtList()
   typesection.assertNodeKind {nnkStmtList}
@@ -150,12 +154,62 @@ macro derive*(
 proc getObjectStructure*(obj: NimNode): TraitObject =
   defaultMap[obj.signatureHash()]
 
-proc setObjectStructure*(obj: NimNode) =
-  let parsed: TraitObject = parseObject(obj, false)
+proc setObjectStructure*(obj: NimNode, consts: seq[NimNode]) =
+  var parsed: TraitObject = parseObject(obj, false, consts)
+  if parsed.hasPragma("defaultImpl"):
+    let pragma = parsed.getPragmaArgs("defaultImpl")
+    for field in iterateFields(parsed):
+      for arg in pragma[0]:
+        if field.name == arg[0].strVal():
+          field.value = some arg[1]
+
   defaultMap[obj.signatureHash()] = parsed
 
-macro storeTraits*(obj: typed) =
-  setObjectStructure(obj)
+macro storeTraitsImpl*(obj: typed, consts: varargs[typed]) =
+  setObjectStructure(obj, toSeq(consts))
+
+
+macro storeTraits*(obj: untyped, consts: varargs[untyped]) =
+  # Generate call to store all constants in `(name, node)` plist
+  result = newCall("storeTraitsImpl", obj)
+  for c in consts:
+    result.add nnkPar.newTree(newLit(c.strVal()), c)
+
+template defaultImpl*(arg: untyped) {.pragma.}
+
+macro Default*(obj: untyped): untyped =
+  var defaulted = nnkBracket.newTree()
+  proc aux(node: NimNode) =
+    case node.kind:
+      of nnkIdentDefs:
+        if node[2].kind != nnkEmpty:
+          defaulted.add nnkTupleConstr.newTree(
+            newLit(node[0].strVal()), node[2])
+
+          node[2] = newEmptyNode()
+
+      of nnkTokenKinds:
+        discard
+
+      else:
+        for subnode in node:
+          aux(subnode)
+
+
+  aux(obj)
+
+  if obj[0].kind == nnkPragmaExpr:
+    obj[0][1].add newCall("defaultImpl", defaulted)
+
+  else:
+    raiseImplementKindError(obj[0])
+
+  # echo $!obj
+  return obj
+
+
+
+
 
 
 func toNimNode(str: string): NimNode = ident(str)
@@ -653,6 +707,7 @@ proc initPositionalInitImpl*[T: enum](
       var `res` = `typeName`(kind: kind)
       `result`
       `res`
+
 
 
 

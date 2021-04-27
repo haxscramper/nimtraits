@@ -273,33 +273,38 @@ suite "`trait`":
 
     type
       En1 = enum e1First, e1FirstCopy1, e1FirstCopy2, e1Second
-      En2 = enum e2First, e2Second, e2SecondCopy
+      En2 = enum e2First, e2Second, e2SecondCopy = 5,
+        e2SecondCopy2, e2SecondCopy3 = 10
       En3 = enum e3First, e3Second
 
-      Obj {.Eq, XmlIO.} = object
+    const constValue = { e2SecondCopy .. e2SecondCopy2 }
+    const constValue2 = e3Second
+
+    type
+      Obj {.Default, Eq, XmlIO.} = object
         case k1: En1
           of e1First .. e1FirstCopy2:
              case k2: En2
                of e2First:
-                 f12first: string
+                 f12first: string = "test"
 
                of e2Second:
-                 f12second: string
-                 f12secondDouble: string
+                 f12second: string = "test2"
+                 f12secondDouble: string = "test23"
 
-               of e2SecondCopy:
+               of constValue, e2SecondCopy3:
                  discard
 
           of e1Second:
             case k3: En3
               of e3First:
-                f13first: string
+                f13first: string = "test3"
 
-              of e3Second:
-                f13second: string
+              of constValue2:
+                f13second: string = "testf13"
 
 
-    storeTraits(Obj)
+    storeTraits(Obj, constValue, constValue2)
 
     proc writeXml(stream: Stream, target: Obj) =
       genXmlWriter(Obj, stream, target)
