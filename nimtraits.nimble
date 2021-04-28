@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.2"
+version       = "0.1.3"
 author        = "haxscramper"
 description   = "Trait system for nim"
 license       = "Apache-2.0"
