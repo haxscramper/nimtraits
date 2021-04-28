@@ -3,3 +3,5 @@ nimdoc.cfg
 auto/
 _minted-*/*
 *.tex
+**/cache
+**/out
