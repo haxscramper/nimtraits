@@ -122,5 +122,10 @@ macro Default*(obj: untyped): untyped =
 
   return obj
 
+macro Derive*(obj: typed): untyped =
+  echo obj.treeRepr1()
+  result = obj
+
 
 template Attr*() {.pragma.}
+template Skip*(contexts: varargs[untyped]) {.pragma.}
