@@ -1,171 +1,137 @@
 import ../nimtraits
 import hnimast
 import hmisc/helpers
+import hmisc/hasts/xml_ast
+import std/with
+export xml_ast
 import std/[tables, xmltree]
 import hmisc/hdebug_misc
 
 import hpprint
+import std/streams
 
-macro genNewObject*(obj: typedesc) =
-  let impl = getObjectStructure(obj)
+
+proc newCall*[N](arg1: N, name: string, args: varargs[N]): N =
+  ## Create new `Call` node using `arg1` as a first argumen, `name` as a
+  ## function name. This is a convenience function for constructing chained
+  ## one-or-more argument calls using
+  ## `obj.newCall("callName").newCall("anotherCall")`. NOTE that it does
+  ## not create `DotExpr` node.
+  result = newNTree[N](nnkCall, newNIdent[N](name))
+  result.add arg1
+  for arg in args:
+    result.add arg
+
+proc newCall*(obj: NObjectDecl): NimNode =
+  # TODO check if object is a ref or not and select corresponding name
+  return newCall("new" & obj.name.head)
+
+proc newWhile*[N](expr: N, body: varargs[N]): N =
+  result = newNTree[N](
+    nnkWhileStmt, expr, newNtree[N](nnkStmtList, body))
+
+proc addArgument*[N](n: N, name: string, expr: N) =
+  n.add newNTree[N](nnkExprEqExpr, newIdent(name), expr)
+
+proc newAnd*[N](a, b: N): N =
+  newNTree[N](nnkInfix, newNIdent[N]("and"), a, b)
+
+proc newOr*[N](a, b: N): N =
+  newNTree[N](nnkInfix, newNIdent[N]("or"), a, b)
+
+proc newNot*[N](a: N): N =
+  newNTree[N](nnkPrefix, newNIdent[N]("not"), a)
+
+proc newIn*[N; E: enum](a: N, b: set[E]): N =
+  newNTree[N](nnkInfix, newNIdent[N]("in"), a, newNLit[N, set[E]](b))
+
+proc loadXml*[E: enum](stream: var HXmlParser, target: var E, tag: string) =
+  target = parseEnum[E](stream.attrValue())
+  stream.next()
+
+proc loadXml*(stream: var HXmlParser, target: var string, tag: string) =
+  if stream.kind == XmlEventKind.xmlAttribute:
+    target = stream.strVal()
+    stream.next()
+
+  else:
+    stream.skipElementStart(tag)
+    parseXsdString(target, stream)
+    stream.skipElementEnd(tag)
+
+proc newBreak*(target: NimNode = newEmptyNode()): NimNode =
+  newTree(nnkBreakStmt, target)
+
+proc newIfStmt*[N](cond, body: N): NimNode =
+  newNTree[N](nnkIfStmt, newNTree[N](nnkElifBranch, cond, body))
+
+macro genXmlLoader*(
+  obj: typedesc, target, stream, tag: untyped): untyped =
 
   result = newStmtList()
 
-  let newObj = impl.mapItPath(newIdent(path[^1].name)):
-    if path.len == 2 and path[^1].kindField.isFinalBranch():
-      var res = newCaseStmt(newIdent(path[0].kindField.name))
-      for v1 in path[0].ofValue:
-        var newCall = nnkObjConstr.newTree(newIdent(impl.name.head))
-        newCall.add newExprColon(newIdent(path[0].kindField.name), v1)
-        newCall.add newExprColon(newIdent(path[1].kindField.name),
-                                 newIdent(path[^1].kindField.name))
+  result.add stream.newCall("skipElementStart", tag)
 
-        res.addBranch(v1, newAsgn(newIdent("result"), newCall))
+  let
+    target = target.copyNimNode()
+    stream = stream.copyNimNode()
+    impl = getObjectStructure(obj)
 
-      res.addBranch(newDiscardStmt())
+  var
+    declareKind = newStmtList()
+    loadKind = newCaseStmt(stream.newCall("attrKey"))
+    newObject = impl.newCall()
+    loadAttr = newCaseStmt(stream.newCall("attrKey"))
+    loadFields = newCaseStmt(stream.newCall("elementName"))
 
-      return res
+  for field in iterateFields(impl):
+    if field.isKind:
+      declareKind.add newVar(field.name, field.fldType)
+      newObject.addArgument(field.name, newIdent(field.name))
 
-  result.add newObj
+      loadKind.addBranch(
+        field.name,
+        stream.newCall("loadXml", newIdent(field.name), newLit(field.name)))
 
-  let init = impl.mapItGroups("result".newDot(path[^1])):
-    var res = newStmtList()
-    for field in group:
-      if field.value.isSome():
-        res.add newAsgn(newIdent("result").newDot(field), field.value.get())
+    elif not field.isMarkedWith("Skip", "IO") and field.isMarkedWith("Attr"):
+      loadAttr.addBranch(
+        field.name,
+        stream.newCall("loadXml", target.newDot(field), newLit(field.name)))
 
-    res
+    else:
+      loadFields.addBranch(
+        field.name,
+        stream.newCall("loadXml", target.newDot(field), newLit(field.name)))
 
-  result.add init
+  if declareKind.len > 0:
+    result.add declareKind
 
-import std/streams
+    let done = newIdent("kindParse")
+    result.add newVar(done, newNType("bool"), newLit(false))
 
-type
-  XmlWriter* = object
-    stream: Stream
-    indentBuf: string
-    ignoreIndent: int
+    loadKind.addBranch(newAsgn(done, newLit(true)))
 
-using writer: var XmlWriter
+    result.add newWhile(
+      newAnd(newNot(done), stream.newCall("kind").newIn({
+        XmlEventKind.xmlAttribute})),
+      loadKind)
 
-proc newXmlWriter*(stream: Stream): XmlWriter =
-  XmlWriter(stream: stream)
+  result.add newAsgn(target, newObject)
 
+  var kindCase = newCaseStmt(stream.newDot("kind"))
 
-proc space*(writer) = writer.stream.write(" ")
-proc line*(writer) = writer.stream.write("\n")
-proc indent*(writer) = writer.indentBuf.add "  "
-proc dedent*(writer) =
-  writer.indentBuf.setLen(max(writer.indentBuf.len - 2, 0))
+  loadAttr.addBranch(stream.newCall("raiseUnexpectedAttribute"))
 
-proc writeInd*(writer) =
-  if writer.ignoreIndent > 0:
-    dec writer.ignoreIndent
+  with kindCase:
+    addBranch({XmlEventKind.xmlAttribute}, loadAttr)
+    addBranch({xmlElementStart, xmlElementOpen}, loadFields)
+    addBranch({xmlElementClose}, stream.newCall("next"))
+    addBranch({xmlElementEnd}, stream.newCall("next"), newBreak())
+    addBranch(stream.newCall("raiseUnexpectedElement"))
 
-  else:
-    writer.stream.write(writer.indentBuf)
+  result.add newWhile(newLit(true), kindCase)
 
-proc ignoreNextIndent*(writer) = inc writer.ignoreIndent
-
-proc xmlCData*(writer; text: string) =
-  writer.stream.write("<![CDATA[")
-  writer.stream.write(text)
-  writer.stream.write("]]>")
-
-proc xmlStart*(writer; elem: string, indent: bool = true) =
-  if indent: writer.writeInd()
-  writer.stream.write("<", elem, ">")
-  if indent: writer.line()
-
-proc xmlEnd*(writer; elem: string, indent: bool = true) =
-  if indent: writer.writeInd()
-  writer.stream.write("</", elem, ">")
-  if indent: writer.line()
-
-proc xmlOpen*(writer; elem: string, indent: bool = true) =
-  if indent: writer.writeInd()
-  writer.stream.write("<", elem)
-
-proc xmlClose*(writer) = writer.stream.write(">")
-
-proc xmlCloseEnd*(writer) =
-  writer.stream.write("/>")
-  writer.line()
-
-
-proc xmlWrappedCdata*(writer; tag, text: string) =
-  writer.writeInd()
-  writer.xmlStart(tag, false)
-  writer.xmlCData(text)
-  writer.xmlEnd(tag, false)
-  writer.line()
-
-proc toXmlString*[T](item: Option[T]): string =
-  mixin toXmlString
-  if item.isSome():
-    return toXmlString(item.get())
-
-proc toXmlString*(item: string): string = item
-proc toXmlString*(item: enum | bool | float): string = $item
-proc toXmlString*(item: SomeInteger): string = $item
-proc writeRaw*(writer; text: string) =
-  writer.stream.write(xmltree.escape text)
-
-proc xmlAttribute*(
-    writer; key: string, value: SomeInteger | bool | float | enum | string) =
-  writer.stream.write(
-    " ", key, "=\"", xmltree.escape(toXmlString(value)), "\"")
-
-proc xmlAttribute*[T](writer; key: string, value: Option[T]) =
-  if value.isSome():
-    xmlAttribute(writer, key, value.get())
-
-proc writeXml*(
-  writer; value: string | SomeInteger | bool | SomeFloat | enum, tag: string) =
-  writer.writeInd()
-  writer.xmlStart(tag, false)
-  writer.stream.write(xmltree.escape $value)
-  writer.xmlEnd(tag, false)
-  writer.line()
-
-
-proc writeXml*[T](writer; values: seq[T], tag: string) =
-  mixin writeXml
-  for it in values:
-    writer.writeXml(it, tag)
-
-proc writeXml*[K, V](writer; table: Table[K, V], tag: string) =
-  mixin writeXml
-  for key, value in pairs(table):
-    writer.xmlStart(tag)
-    writer.writeXml(key, "key")
-    writer.writeXml(value, "value")
-    writer.xmlEnd(tag)
-
-proc writeXml*[T](writer; opt: Option[T], tag: string) =
-  if opt.isSome():
-    writeXml(writer, opt.get(), tag)
-
-# proc writeXml*[E: enum](writer; value: E, tag: string) =
-  # writer.xmlAttribute(tag, $value)
-
-proc writeXml*(writer; value: Slice[int], tag: string) =
-  writer.xmlOpen(tag)
-  writer.xmlAttribute("a", $value.a)
-  writer.xmlAttribute("b", $value.b)
-  writer.xmlCloseEnd()
-
-proc writeXml*[E: enum](writer; values: set[E], tag: string) =
-  writer.xmlStart(tag)
-  writer.indent()
-  writer.writeInd()
-  for item in values:
-    writer.xmlOpen("item")
-    writer.xmlAttribute("val", $item)
-    writer.xmlCloseEnd()
-
-  writer.dedent()
-  writer.xmlEnd(tag)
+  echo result
 
 macro genXmlWriter*(
     obj: typedesc, input, stream, tag: untyped,
@@ -173,8 +139,9 @@ macro genXmlWriter*(
     addClose: static[bool] = true,
     extraAttrWrite: untyped = false,
     addStartIndent: untyped = true,
-    addEndIndent: untyped = true
-  ) =
+    addEndIndent: untyped = true,
+    hasFieldsExpr: untyped = true
+  ): untyped =
 
   var ignored: seq[string]
   for item in ignoredNames:
@@ -191,7 +158,7 @@ macro genXmlWriter*(
     var res = newStmtList()
     for field in group:
       if (field.isKind or field.isMarkedWith("Attr")) and
-         not field.isMarkedWithArg("Skip", "IO"):
+         not field.isMarkedWith("Skip", "IO"):
         res.add newCall(
           "xmlAttribute", stream, newLit(field.name),
           input.newDot(field))
@@ -204,7 +171,7 @@ macro genXmlWriter*(
     var res = newStmtList()
     for field in group:
       if not (field.isKind or field.isMarkedWith("Attr")) and
-         not (field.isMarkedWithArg("Skip", "IO")) and
+         not (field.isMarkedWith("Skip", "IO")) and
          field.isExported and
          field.name notin ignored:
         hasFields = true
@@ -220,17 +187,27 @@ macro genXmlWriter*(
           extraAttrWrite.eqIdent("false")):
     result.add extraAttrWrite
 
-  if hasFields:
-    result.add newCall("indent", stream)
-    result.add newCall("xmlClose", stream)
-    result.add newCall("line", stream)
+  var writeFields = nnkIfStmt.newTree()
 
-    result.add fieldWrite
-    result.add newCall("dedent", stream)
+  block:
+    var stmt = newStmtList()
+    stmt.add newCall("indent", stream)
+    stmt.add newCall("xmlClose", stream)
+    stmt.add newCall("line", stream)
+
+    stmt.add fieldWrite
+    stmt.add newCall("dedent", stream)
     if addClose:
-      result.add newCall("xmlEnd", stream, tag, addEndIndent)
-  else:
+      stmt.add newCall("xmlEnd", stream, tag, addEndIndent)
+
+    writeFields.addBranch(
+      newCall("and", newLit(hasFields), hasFieldsExpr),
+      stmt)
+
+  block:
     if addClose:
-      result.add newCall("xmlCloseEnd", stream)
+      writeFields.addBranch(newCall("xmlCloseEnd", stream))
+
+  result.add writeFields
 
   echov result

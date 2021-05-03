@@ -1,8 +1,10 @@
 import std/[strutils, unittest, macros, streams]
 
-import ../src/nimtraits, ../src/nimtraits/trait_xml
+import ../src/nimtraits, ../src/nimtraits/[trait_xml, trait_new]
+import hmisc/other/oswrap
 import hmisc/helpers
 import hnimast
+import hpprint
 
 suite "`trait`":
   test "template annotations":
@@ -54,5 +56,20 @@ suite "`trait`":
     proc writeXml(stream: var XmlWriter, target: Obj) =
       genXmlWriter(Obj, target, stream, "item")
 
-    var writer = newXmlWriter(stdout.newFileStream())
-    writer.writeXml(newObj())
+    var outStr: string
+    var writer = newXmlWriter(newOutStringStream(outStr))
+    var obj = newObj(e1Second)
+    obj.f13first = "a"
+    writer.writeXml(obj)
+
+    var reader = newHXmlParser(outStr)
+
+    proc loadXml(stream: var HXmlParser, target: var Obj, tag: string) =
+      genXmlLoader(Obj, target, stream, tag)
+
+    echo outStr
+    var target: Obj
+    reader.loadXml(target, "item")
+
+    pprint obj
+    pprint target
