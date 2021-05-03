@@ -23,9 +23,9 @@ suite "`trait`":
 
     type
       Obj {.Default, Eq, XmlIO.} = object
-        case k1: En1
+        case k1*: En1
           of e1First .. e1FirstCopy2:
-             case k2: En2
+             case k2*: En2
                of e2First:
                  f12first*: string = "test"
 
@@ -37,7 +37,7 @@ suite "`trait`":
                  discard
 
           of e1Second:
-            case k3: En3
+            case k3*: En3
               of e3First:
                 f13first* {.Attr.}: string = "test3"
 
@@ -53,23 +53,32 @@ suite "`trait`":
 
       genNewObject(Obj)
 
-    proc writeXml(stream: var XmlWriter, target: Obj) =
-      genXmlWriter(Obj, target, stream, "item")
-
-    var outStr: string
-    var writer = newXmlWriter(newOutStringStream(outStr))
-    var obj = newObj(e1Second)
-    obj.f13first = "a"
-    writer.writeXml(obj)
-
-    var reader = newHXmlParser(outStr)
+    proc writeXml(stream: var XmlWriter, target: Obj, tag: string) =
+      genXmlWriter(Obj, target, stream, tag)
 
     proc loadXml(stream: var HXmlParser, target: var Obj, tag: string) =
       genXmlLoader(Obj, target, stream, tag)
 
-    echo outStr
-    var target: Obj
-    reader.loadXml(target, "item")
+    proc reloadXml[T](obj: T) =
+      var
+        outStr: string
+        writer = newXmlWriter(newOutStringStream(outStr))
 
-    pprint obj
-    pprint target
+      writer.writeXml(obj, "item")
+      echo outStr
+
+      var
+        reader = newHXmlParser(outStr)
+        target: T
+
+      reader.loadXml(target, "item")
+
+      pprint obj
+      pprint target
+
+    var obj = newObj(e1Second)
+    obj.f13first = "a"
+
+    reloadXml(obj)
+
+

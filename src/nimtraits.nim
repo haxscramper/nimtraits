@@ -66,15 +66,16 @@ proc isObject*(node: NimNode): bool =
 proc setObjectStructure*(obj: NimNode, consts: seq[NimNode]) =
   let impl = getTypeImplBody(obj, false)
   if impl.isObject():
-    var parsed: TraitObject = parseObject(impl, false, consts)
-    if parsed.hasPragma("defaultImpl"):
-      let pragma = parsed.getPragmaArgs("defaultImpl")
-      for field in iterateFields(parsed):
-        for arg in pragma[0]:
-          if field.name == arg[0].strVal():
-            field.value = some arg[1]
+    if obj.signatureHash() notin objectImplMap:
+      var parsed: TraitObject = parseObject(impl, false, consts)
+      if parsed.hasPragma("defaultImpl"):
+        let pragma = parsed.getPragmaArgs("defaultImpl")
+        for field in iterateFields(parsed):
+          for arg in pragma[0]:
+            if field.name == arg[0].strVal():
+              field.value = some arg[1]
 
-    objectImplMap[obj.signatureHash()] = parsed
+      objectImplMap[obj.signatureHash()] = parsed
 
 
   else:

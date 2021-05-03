@@ -49,8 +49,79 @@ proc loadXml*[E: enum](stream: var HXmlParser, target: var E, tag: string) =
   target = parseEnum[E](stream.attrValue())
   stream.next()
 
+proc isAttribute*(stream: HXmlParser): bool =
+  stream.kind == XmlEventKind.xmlAttribute
+
+template loadPrimitive*(
+    stream: var HXmlParser, target: typed, tag: string,
+    loadAttr: untyped, loadField: untyped
+  ): untyped =
+
+  if stream.isAttribute():
+    loadAttr
+    stream.next()
+
+  else:
+    stream.skipElementStart(tag)
+    loadField
+    stream.skipElementEnd(tag)
+
+proc loadXml*(stream: var HXmlParser, target: var bool, tag: string) =
+  loadPrimitive(
+    stream, target, tag,
+    loadAttr = (target = stream.strVal().parseBool()),
+    loadField = (target = stream.strVal().parseBool()),
+  )
+
+proc loadXml*(stream: var HXmlParser, target: var SomeFloat, tag: string) =
+  loadPrimitive(
+    stream, target, tag,
+    loadAttr = (target = stream.strVal().parseFloat()),
+    loadField = (target = stream.strVal().parseFloat()),
+  )
+
+proc loadXml*[E](stream: var HXmlParser, target: var set[E], tag: string) =
+  stream.skipElementStart(tag)
+  while stream.elementName() == "item":
+    stream.next()
+    assert stream.attrKey() == "val"
+    target.incl parseEnum[E](stream.attrValue())
+    stream.next()
+
+  stream.skipElementEnd(tag)
+
+proc loadXml*[T](stream: var HXmlParser, target: var seq[T], tag: string) =
+  mixin loadXml
+  while stream.kind in {xmlElementOpen, xmlElementStart} and
+        stream.elementName() == tag:
+    var tmp: T
+    loadXml(stream, tmp, tag)
+    target.add tmp
+
+proc loadXml*[A, B](
+  stream: var HXmlParser, target: var Table[A, B], tag: string) =
+
+  mixin loadXml
+  while stream.elementName() == tag:
+    var key: A
+    var val: B
+    stream.skipElementStart(tag)
+    loadXml(stream, key, "key")
+    loadXml(stream, val, "value")
+    stream.skipElementEnd(tag)
+    target[key] = val
+
+
+
+proc loadXml*[T](stream: var HXmlParser, target: var Option[T], tag: string) =
+  mixin loadXml
+  if stream.elementName() == tag:
+    var tmp: T
+    loadXml(stream, tmp, tag)
+    target = some(tmp)
+
 proc loadXml*(stream: var HXmlParser, target: var string, tag: string) =
-  if stream.kind == XmlEventKind.xmlAttribute:
+  if stream.isAttribute():
     target = stream.strVal()
     stream.next()
 
@@ -59,6 +130,17 @@ proc loadXml*(stream: var HXmlParser, target: var string, tag: string) =
     parseXsdString(target, stream)
     stream.skipElementEnd(tag)
 
+proc loadXml*(stream: var HXmlParser, target: var int, tag: string) =
+  if stream.isAttribute():
+    target = stream.strVal().parseInt()
+    stream.next()
+
+  else:
+    stream.skipElementStart(tag)
+    target = stream.strVal().parseInt()
+    stream.skipElementEnd(tag)
+
+
 proc newBreak*(target: NimNode = newEmptyNode()): NimNode =
   newTree(nnkBreakStmt, target)
 
@@ -66,11 +148,30 @@ proc newIfStmt*[N](cond, body: N): NimNode =
   newNTree[N](nnkIfStmt, newNTree[N](nnkElifBranch, cond, body))
 
 macro genXmlLoader*(
-  obj: typedesc, target, stream, tag: untyped): untyped =
+    obj: typedesc, target, stream, tag: untyped,
+    newObjExpr: untyped = nil,
+    loadHeader: static[bool] = true,
+    extraFieldLoader: untyped = nil
+  ): untyped =
+
+  ##[
+
+- @arg{loadHeader} :: Generate code to load object start (`<tag`), kind
+  fields and fields marked with `.Attr.`. Can be turned off to manually
+  process input attributes and then generate remaining boilerplate. NOTE:
+  setting to `true` implies that @arg{target} object would be created
+  externally, and @arg{newObjExpr} is ignored in that case.
+- @arg{extraFieldLoader} :: Additional field handlers for object. Passed
+  AST must be either `nil`, or follow pattern
+  @patt{Curly[all ExprColonExpr[@name, @loader]]}
+
+]##
+
 
   result = newStmtList()
 
-  result.add stream.newCall("skipElementStart", tag)
+  if loadHeader:
+    result.add stream.newCall("skipElementStart", tag)
 
   let
     target = target.copyNimNode()
@@ -85,7 +186,10 @@ macro genXmlLoader*(
     loadFields = newCaseStmt(stream.newCall("elementName"))
 
   for field in iterateFields(impl):
-    if field.isKind:
+    if not field.isExported or field.isMarkedWith("Skip", "IO"):
+      discard
+
+    elif field.isKind:
       declareKind.add newVar(field.name, field.fldType)
       newObject.addArgument(field.name, newIdent(field.name))
 
@@ -93,7 +197,7 @@ macro genXmlLoader*(
         field.name,
         stream.newCall("loadXml", newIdent(field.name), newLit(field.name)))
 
-    elif not field.isMarkedWith("Skip", "IO") and field.isMarkedWith("Attr"):
+    elif field.isMarkedWith("Attr"):
       loadAttr.addBranch(
         field.name,
         stream.newCall("loadXml", target.newDot(field), newLit(field.name)))
@@ -103,7 +207,7 @@ macro genXmlLoader*(
         field.name,
         stream.newCall("loadXml", target.newDot(field), newLit(field.name)))
 
-  if declareKind.len > 0:
+  if declareKind.len > 0 and loadHeader:
     result.add declareKind
 
     let done = newIdent("kindParse")
@@ -116,22 +220,38 @@ macro genXmlLoader*(
         XmlEventKind.xmlAttribute})),
       loadKind)
 
-  result.add newAsgn(target, newObject)
+  if loadHeader:
+    if newObjExpr.kind != nnkNilLit:
+      result.add newAsgn(target, newObjExpr)
 
-  var kindCase = newCaseStmt(stream.newDot("kind"))
+    else:
+      result.add newAsgn(target, newObject)
+
+
+
+  var main = newCaseStmt(stream.newDot("kind"))
 
   loadAttr.addBranch(stream.newCall("raiseUnexpectedAttribute"))
 
-  with kindCase:
-    addBranch({XmlEventKind.xmlAttribute}, loadAttr)
-    addBranch({xmlElementStart, xmlElementOpen}, loadFields)
-    addBranch({xmlElementClose}, stream.newCall("next"))
-    addBranch({xmlElementEnd}, stream.newCall("next"), newBreak())
-    addBranch(stream.newCall("raiseUnexpectedElement"))
+  if extraFieldLoader.kind != nnkNilLit:
+    for field in extraFieldLoader:
+      loadFields.addBranch(field[0], field[1])
 
-  result.add newWhile(newLit(true), kindCase)
+  loadFields.addBranch(stream.newCall("raiseUnexpectedElement"))
 
-  echo result
+  if loadAttr.len > 1 and loadHeader:
+    main.addBranch({XmlEventKind.xmlAttribute}, loadAttr)
+
+  if loadFields.len > 1:
+    main.addBranch({xmlElementStart, xmlElementOpen}, loadFields)
+
+  main.addBranch({xmlElementClose}, stream.newCall("next"))
+  main.addBranch({xmlElementEnd}, stream.newCall("next"), newBreak())
+  main.addBranch(stream.newCall("raiseUnexpectedElement"))
+
+  result.add newWhile(newLit(true), main)
+
+  echov result
 
 macro genXmlWriter*(
     obj: typedesc, input, stream, tag: untyped,
@@ -154,10 +274,20 @@ macro genXmlWriter*(
 
   result = newStmtList()
 
+  let kindWrite = impl.mapItGroups(input.newDot(path[^1].name)):
+    var res = newStmtList()
+    for field in group:
+      if field.isKind:
+        res.add newCall(
+          "xmlAttribute", stream, newLit(field.name),
+          input.newDot(field))
+
+    res
+
   let attrWrite = impl.mapItGroups(input.newDot(path[^1].name)):
     var res = newStmtList()
     for field in group:
-      if (field.isKind or field.isMarkedWith("Attr")) and
+      if field.isMarkedWith("Attr") and
          not field.isMarkedWith("Skip", "IO"):
         res.add newCall(
           "xmlAttribute", stream, newLit(field.name),
@@ -181,8 +311,8 @@ macro genXmlWriter*(
     res
 
   result.add newCall("xmlOpen", stream, tag, addStartIndent)
+  result.add kindWrite
   result.add attrWrite
-  # echo extraAttrWrite.treeRepr1()
   if not (extraAttrWrite.kind in {nnkIdent, nnkSym} and
           extraAttrWrite.eqIdent("false")):
     result.add extraAttrWrite
@@ -210,4 +340,3 @@ macro genXmlWriter*(
 
   result.add writeFields
 
-  echov result
