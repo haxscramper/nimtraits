@@ -1,14 +1,12 @@
 import ../nimtraits
+
 import hnimast
+import std/[xmltree]
+
 import hmisc/helpers
 import hmisc/hasts/xml_ast
-import std/with
-export xml_ast
-import std/[tables, xmltree]
 import hmisc/hdebug_misc
-
-import hpprint
-import std/streams
+export xml_ast
 
 macro genXmlLoader*(
     obj: typedesc, target, stream, tag: untyped,
