@@ -10,143 +10,6 @@ import hmisc/hdebug_misc
 import hpprint
 import std/streams
 
-
-proc newCall*[N](arg1: N, name: string, args: varargs[N]): N =
-  ## Create new `Call` node using `arg1` as a first argumen, `name` as a
-  ## function name. This is a convenience function for constructing chained
-  ## one-or-more argument calls using
-  ## `obj.newCall("callName").newCall("anotherCall")`. NOTE that it does
-  ## not create `DotExpr` node.
-  result = newNTree[N](nnkCall, newNIdent[N](name))
-  result.add arg1
-  for arg in args:
-    result.add arg
-
-proc newCall*(obj: NObjectDecl): NimNode =
-  # TODO check if object is a ref or not and select corresponding name
-  return newCall("new" & obj.name.head)
-
-proc newWhile*[N](expr: N, body: varargs[N]): N =
-  result = newNTree[N](
-    nnkWhileStmt, expr, newNtree[N](nnkStmtList, body))
-
-proc addArgument*[N](n: N, name: string, expr: N) =
-  n.add newNTree[N](nnkExprEqExpr, newIdent(name), expr)
-
-proc newAnd*[N](a, b: N): N =
-  newNTree[N](nnkInfix, newNIdent[N]("and"), a, b)
-
-proc newOr*[N](a, b: N): N =
-  newNTree[N](nnkInfix, newNIdent[N]("or"), a, b)
-
-proc newNot*[N](a: N): N =
-  newNTree[N](nnkPrefix, newNIdent[N]("not"), a)
-
-proc newIn*[N; E: enum](a: N, b: set[E]): N =
-  newNTree[N](nnkInfix, newNIdent[N]("in"), a, newNLit[N, set[E]](b))
-
-proc loadXml*[E: enum](stream: var HXmlParser, target: var E, tag: string) =
-  target = parseEnum[E](stream.attrValue())
-  stream.next()
-
-proc isAttribute*(stream: HXmlParser): bool =
-  stream.kind == XmlEventKind.xmlAttribute
-
-template loadPrimitive*(
-    stream: var HXmlParser, target: typed, tag: string,
-    loadAttr: untyped, loadField: untyped
-  ): untyped =
-
-  if stream.isAttribute():
-    loadAttr
-    stream.next()
-
-  else:
-    stream.skipElementStart(tag)
-    loadField
-    stream.skipElementEnd(tag)
-
-proc loadXml*(stream: var HXmlParser, target: var bool, tag: string) =
-  loadPrimitive(
-    stream, target, tag,
-    loadAttr = (target = stream.strVal().parseBool()),
-    loadField = (target = stream.strVal().parseBool()),
-  )
-
-proc loadXml*(stream: var HXmlParser, target: var SomeFloat, tag: string) =
-  loadPrimitive(
-    stream, target, tag,
-    loadAttr = (target = stream.strVal().parseFloat()),
-    loadField = (target = stream.strVal().parseFloat()),
-  )
-
-proc loadXml*[E](stream: var HXmlParser, target: var set[E], tag: string) =
-  stream.skipElementStart(tag)
-  while stream.elementName() == "item":
-    stream.next()
-    assert stream.attrKey() == "val"
-    target.incl parseEnum[E](stream.attrValue())
-    stream.next()
-
-  stream.skipElementEnd(tag)
-
-proc loadXml*[T](stream: var HXmlParser, target: var seq[T], tag: string) =
-  mixin loadXml
-  while stream.kind in {xmlElementOpen, xmlElementStart} and
-        stream.elementName() == tag:
-    var tmp: T
-    loadXml(stream, tmp, tag)
-    target.add tmp
-
-proc loadXml*[A, B](
-  stream: var HXmlParser, target: var Table[A, B], tag: string) =
-
-  mixin loadXml
-  while stream.elementName() == tag:
-    var key: A
-    var val: B
-    stream.skipElementStart(tag)
-    loadXml(stream, key, "key")
-    loadXml(stream, val, "value")
-    stream.skipElementEnd(tag)
-    target[key] = val
-
-
-
-proc loadXml*[T](stream: var HXmlParser, target: var Option[T], tag: string) =
-  mixin loadXml
-  if stream.elementName() == tag:
-    var tmp: T
-    loadXml(stream, tmp, tag)
-    target = some(tmp)
-
-proc loadXml*(stream: var HXmlParser, target: var string, tag: string) =
-  if stream.isAttribute():
-    target = stream.strVal()
-    stream.next()
-
-  else:
-    stream.skipElementStart(tag)
-    parseXsdString(target, stream)
-    stream.skipElementEnd(tag)
-
-proc loadXml*(stream: var HXmlParser, target: var int, tag: string) =
-  if stream.isAttribute():
-    target = stream.strVal().parseInt()
-    stream.next()
-
-  else:
-    stream.skipElementStart(tag)
-    target = stream.strVal().parseInt()
-    stream.skipElementEnd(tag)
-
-
-proc newBreak*(target: NimNode = newEmptyNode()): NimNode =
-  newTree(nnkBreakStmt, target)
-
-proc newIfStmt*[N](cond, body: N): NimNode =
-  newNTree[N](nnkIfStmt, newNTree[N](nnkElifBranch, cond, body))
-
 macro genXmlLoader*(
     obj: typedesc, target, stream, tag: untyped,
     newObjExpr: untyped = nil,
@@ -166,7 +29,6 @@ macro genXmlLoader*(
   @patt{Curly[all ExprColonExpr[@name, @loader]]}
 
 ]##
-
 
   result = newStmtList()
 
@@ -339,4 +201,3 @@ macro genXmlWriter*(
       writeFields.addBranch(newCall("xmlCloseEnd", stream))
 
   result.add writeFields
-
