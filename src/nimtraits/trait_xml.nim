@@ -1,18 +1,90 @@
 import ../nimtraits
 
 import hnimast
-import std/[xmltree]
+import std/[xmltree, sequtils]
 
 import hmisc/helpers
-import hmisc/hasts/xml_ast
+import hmisc/hasts/[xml_ast, xsd_ast]
 import hmisc/hdebug_misc
-export xml_ast
+export xml_ast, xsd_ast
+
+type
+  XsdWriter* = object
+    types: Table[string, XsdEntry]
+
+func newXsdComplexType*(): XsdEntry =
+  newTree(xekComplexComplexType)
+
+func newXsdAttr*(useInfo: XsdEntry, name: string): XsdEntry =
+  discard
+
+func newXsdElement*(useInfo: XsdEntry, name: string): XsdEntry =
+  discard
+
+func getXsdEntryUse*(xw: var XsdWriter, s: typedesc[string]): XsdEntry =
+  discard
+
+func getXsdEntryUse*[E: enum](xw: var XsdWriter, s: typedesc[E]): XsdEntry =
+  if $s notin xw.types:
+    debugecho "Register enum"
+
+func getXsdEntryUse*[T](xw: var XsdWriter, s: typedesc[seq[T]]): XsdEntry =
+  let item = getXsdEntryUse(xw, T)
+
+func getXsdEntryUse*[T](xw: var XsdWriter, s: typedesc[Option[T]]): XsdEntry =
+  let item = getXsdEntryUse(xw, T)
+
+func getXsdEntryUse*[A, B](xw: var XsdWriter, t: typedesc[Table[A, B]]): XsdEntry =
+  let key = getXsdEntryUse(xw, A)
+  let val = getXsdEntryUse(xw, B)
+
+macro genXsdWriterUse*(obj: typedesc, writer: untyped): untyped =
+  let impl = getObjectStructure(obj)
+
+  result = newStmtList()
+  let tmp = newIdent("tmp")
+  result.add newVar(tmp, obj)
+  result.add newAsgn(
+    newIdent("result"),
+    newCall("newXsdComplexType"))
+
+  var
+    attrWrite = newStmtList()
+    fieldWrite = newStmtList()
+
+  for field in iterateFields(impl):
+    if not field.isExported or field.isMarkedWith("Skip", "IO"):
+      discard
+
+    elif field.isKind or field.isMarkedWith("Attr"):
+      result.add newCall(
+        "add",
+        newIdent("result"),
+        newCall("getXsdEntryUse", writer,
+          newCall("typeof", tmp.newDot(field.name))).
+          newCall("newXsdAttr", newLit(field.name))
+      )
+
+    else:
+      result.add newCall(
+        "add",
+        newIdent("result"),
+        newCall("getXsdEntryUse", writer,
+          newCall("typeof", tmp.newDot(field.name))).
+          newCall("newXsdElement", newLit(field.name))
+      )
+
+
+
+
 
 macro genXmlLoader*(
     obj: typedesc, target, stream, tag: untyped,
     newObjExpr: untyped = nil,
     loadHeader: static[bool] = true,
-    extraFieldLoader: untyped = nil
+    extraFieldLoad: untyped = nil,
+    skipFieldLoad: untyped = [""],
+    extraAttrLoad: untyped = nil
   ): untyped =
 
   ##[
@@ -22,13 +94,17 @@ macro genXmlLoader*(
   process input attributes and then generate remaining boilerplate. NOTE:
   setting to `true` implies that @arg{target} object would be created
   externally, and @arg{newObjExpr} is ignored in that case.
-- @arg{extraFieldLoader} :: Additional field handlers for object. Passed
+- @arg{extraFieldLoad} :: Additional field handlers for object. Passed
   AST must be either `nil`, or follow pattern
   @patt{Curly[all ExprColonExpr[@name, @loader]]}
+- @inject{} :: Identifiers for all kind fields - they can be used in
+  @arg{newObjExpr}
 
 ]##
 
   result = newStmtList()
+
+  var ignored: seq[string] = mapIt(skipFieldLoad, it.strVal())
 
   if loadHeader:
     result.add stream.newCall("skipElementStart", tag)
@@ -46,7 +122,9 @@ macro genXmlLoader*(
     loadFields = newCaseStmt(stream.newCall("elementName"))
 
   for field in iterateFields(impl):
-    if not field.isExported or field.isMarkedWith("Skip", "IO"):
+    if not(field.isExported) or
+       field.isMarkedWith("Skip", "IO") or
+       field.name in ignored:
       discard
 
     elif field.isKind:
@@ -87,17 +165,21 @@ macro genXmlLoader*(
     else:
       result.add newAsgn(target, newObject)
 
-
-
   var main = newCaseStmt(stream.newDot("kind"))
+
+  if extraAttrLoad.kind != nnkNilLit:
+    for attr in extraAttrLoad:
+      loadAttr.addBranch(attr[0], attr[1])
 
   loadAttr.addBranch(stream.newCall("raiseUnexpectedAttribute"))
 
-  if extraFieldLoader.kind != nnkNilLit:
-    for field in extraFieldLoader:
+  if extraFieldLoad.kind != nnkNilLit:
+    for field in extraFieldLoad:
       loadFields.addBranch(field[0], field[1])
 
-  loadFields.addBranch(stream.newCall("raiseUnexpectedElement"))
+  loadFields.addBranch(stream.newCall(
+    "raiseUnknownElement",
+    newLit("While parsing fields for " & impl.name.head)))
 
   if loadAttr.len > 1 and loadHeader:
     main.addBranch({XmlEventKind.xmlAttribute}, loadAttr)
@@ -106,25 +188,47 @@ macro genXmlLoader*(
     main.addBranch({xmlElementStart, xmlElementOpen}, loadFields)
 
   main.addBranch({xmlElementClose}, stream.newCall("next"))
-  main.addBranch({xmlElementEnd}, stream.newCall("next"), newBreak())
-  main.addBranch(stream.newCall("raiseUnexpectedElement"))
+  main.addBranch({xmlElementEnd},
+                 stream.newCall("skipElementEnd", tag), newBreak())
+  main.addBranch(stream.newCall(
+    "raiseUnknownElement", newLit("While parsing " & impl.name.head)))
 
   result.add newWhile(newLit(true), main)
 
-  echov result
+
+proc baseImplSym*(t: NimNode): NimNode =
+  case t.kind:
+    of nnkTypeofExpr:
+      result = baseImplSym(t[0])
+
+    of nnkSym:
+      let impl = t.getTypeImpl()
+      case impl.kind:
+        of nnkBracketExpr:
+          result = impl[1].baseImplSym()
+
+        of nnkObjectTy:
+          result = t
+
+        else:
+          raiseImplementKindError(impl, impl.treeRepr())
+
+    else:
+      raiseImplementKindError(t)
 
 macro genXmlWriter*(
     obj: typedesc, input, stream, tag: untyped,
-    ignoredNames: openarray[string] = [""],
+    skipFieldWrite: openarray[string] = [""],
     addClose: static[bool] = true,
     extraAttrWrite: untyped = false,
     addStartIndent: untyped = true,
     addEndIndent: untyped = true,
     hasFieldsExpr: untyped = true
   ): untyped =
+  let obj = if hasObjectStructure(obj): obj else: baseImplSym(obj)
 
   var ignored: seq[string]
-  for item in ignoredNames:
+  for item in skipFieldWrite:
     ignored.add item.strVal()
 
   let
@@ -199,3 +303,12 @@ macro genXmlWriter*(
       writeFields.addBranch(newCall("xmlCloseEnd", stream))
 
   result.add writeFields
+
+proc writeXml*[T: not enum](writer: var XmlWriter, obj: T, tag: string) =
+  mixin writeXml
+  genXmlWriter(T, obj, writer, tag)
+
+
+proc loadXml*[T: not enum](reader: var HXmlParser, obj: var T, tag: string) =
+  mixin writeXml
+  genXmlLoader(T, obj, reader, tag)

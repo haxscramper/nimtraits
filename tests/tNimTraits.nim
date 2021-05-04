@@ -6,7 +6,27 @@ import hmisc/helpers
 import hnimast
 import hpprint
 
+
 suite "`trait`":
+  test "Generic implementation":
+    type
+      OtherType = object
+        field2*: string
+        field43* {.Attr.}: int
+
+      CustomType = object
+        field1*: string
+        field2*: float
+        field3*: OtherType
+
+    var writer = newXmlWriter(stdout)
+
+    storeTraits(OtherType)
+    storeTraits(CustomType)
+
+    writer.writeXml(CustomType(), "test")
+
+
   test "template annotations":
     template Eq() {.pragma.}
     template XmlIO() {.pragma.}
@@ -59,6 +79,9 @@ suite "`trait`":
     proc loadXml(stream: var HXmlParser, target: var Obj, tag: string) =
       genXmlLoader(Obj, target, stream, tag)
 
+    proc getXsdEntryUse(xw: var XsdWriter, desc: typedesc[Obj]): XsdEntry =
+      genXsdWriterUse(Obj, xw)
+
     proc reloadXml[T](obj: T) =
       var
         outStr: string
@@ -81,4 +104,7 @@ suite "`trait`":
 
     reloadXml(obj)
 
+    var xw = XsdWriter()
+    let xsd = xw.getXsdEntryUse(Obj)
 
+    pprint xsd
