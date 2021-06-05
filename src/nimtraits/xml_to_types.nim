@@ -243,6 +243,15 @@ proc wrappedType(
     of xewkSingleChoice:
       newPType(parent.bodyTypeName())
 
+proc groupElements(xsd: XsdEntry): seq[XsdEntry] =
+  if xsd.kind == xekGroupRef:
+    for item in xsd.groupRef[0]:
+      result.add groupElements(item)
+
+  else:
+    result.add xsd
+
+
 proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
   var elements: seq[XsdType]
 
@@ -259,10 +268,15 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
         else:
           echov "Element without name"
 
-      else:
-        # echov element.kind
-        discard
+      of xekGroupRef:
+        for element in element.groupElements():
+          if element.hasName():
+            elements.add typeForEntry(element)
 
+      else:
+        discard
+        # echov element.kind
+        # echov element.treeRepr()
 
   var kind: XsdElementWrapperKind
 
@@ -308,7 +322,7 @@ proc typeForWrapper(xsd; parent: XsdEntry): XsdElementWrapper =
 
 
     else:
-      discard
+      raise newUnexpectedKindError(xsd)
 
 
 
@@ -384,6 +398,9 @@ proc toXsdComplex(xsd, cache): XsdGen =
 
   for entry in xsd:
     case entry.kind:
+      of xekAttribute, xekSimpleContent:
+        discard
+
       of xekSequence, xekChoice, xekGroupRef:
         let wrapper = typeForWrapper(entry, xsd)
         case wrapper.kind:
@@ -438,7 +455,7 @@ proc toXsdComplex(xsd, cache): XsdGen =
             raiseImplementKindError(wrapper)
 
       else:
-        discard
+        raise newUnexpectedKindError(entry, entry.treeRepr())
 
 proc toXsdGen(xsd, cache): seq[XsdGen] =
   case xsd.kind:
@@ -537,8 +554,10 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
     if not(startsWith(parser.attrKey(), ["xmlns:", "xsi:", "xml:"])):
       raiseUnexpectedAttribute(parser)
 
-  mainCase.addBranch(
-    XmlEventKind.xmlAttribute, attrCase, next)
+    else:
+      parser.next()
+
+  mainCase.addBranch(XmlEventKind.xmlAttribute, attrCase)
 
   var unused = {
     xmlError, xmlEof, xmlCharData, xmlWhitespace,
@@ -635,6 +654,31 @@ proc generateForObject(gen, cache): seq[PNimDecl] =
             `gen.bodyTypeName().newPIdent()`(
               kind: `newPIdent(alt.enumName)`, mixedStr: tmp))
 
+      result.add toNimDecl(
+        newPProcDecl(
+          "len", {"item": genObject.name}, some newPType("int"),
+          impl = pquote(item.xsdChoice.len)
+      ))
+
+      result.add toNimDecl(
+        newPProcDecl(
+          "items", {"item": genObject.name},
+          some bodyObject.name,
+          declType = ptkIterator,
+          impl = pquote(
+            for it in item.xsdChoice:
+              yield it
+          )
+      ))
+
+      result.add toNimDecl(
+        newPProcDecl(
+          "[]", {"item": genObject.name, "idx": newPType("int")},
+          some bodyObject.name,
+          kind = pkOperator,
+          impl = pquote(item.xsdChoice[idx])
+      ))
+
     bodyObject.addField(selector)
 
     genObject.addField("xsdChoice", newPType("seq", [bodyObject.name]))
@@ -730,18 +774,9 @@ proc generateForEnum(gen, cache): tuple[decl: PEnumDecl, parser: PProcDecl] =
 
   result.parser.impl = pquote do:
     @@@<<(posComment())
-    when target is seq:
-      var res: typeof(target[0])
-      `parsename`(res, parser, tag)
-      add(target, res)
-
-    elif target is Option:
-      var res: typeof(target.get())
-      `parseName`(res, parser, tag)
-      target = some(res)
-
-    else:
-      `mainCase`
+    mixin loadXml
+    `mainCase`
+    parser.next()
 
 
 proc generateForDistinct(gen, cache):
@@ -766,6 +801,7 @@ proc generateForDistinct(gen, cache):
     var tmp: `baseType`
     `baseParseCall`(tmp, parser)
     target = `newType`(tmp)
+    parser.next()
 
 
 
@@ -802,7 +838,8 @@ proc generateForXsd*(xsd: AbsFile): seq[PNimDecl] =
         if generated.kind in {nekObjectDecl, nekEnumDecl, nekAliasDecl}:
           types.add toNimTypeDecl(generated)
 
-        elif generated.kind in {nekProcDecl}:
+        elif generated.kind in {nekProcDecl} and
+             generated.procDecl.name notin ["len", "items", "[]"]:
           forward.add toNimDecl(generated.procDecl.withoutImpl())
           procs.add generated
 

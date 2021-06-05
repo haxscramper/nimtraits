@@ -196,26 +196,6 @@ macro genXmlLoader*(
   result.add newWhile(newLit(true), main)
 
 
-proc baseImplSym*(t: NimNode): NimNode =
-  case t.kind:
-    of nnkTypeofExpr:
-      result = baseImplSym(t[0])
-
-    of nnkSym:
-      let impl = t.getTypeImpl()
-      case impl.kind:
-        of nnkBracketExpr:
-          result = impl[1].baseImplSym()
-
-        of nnkObjectTy:
-          result = t
-
-        else:
-          raiseImplementKindError(impl, impl.treeRepr())
-
-    else:
-      raiseImplementKindError(t)
-
 macro genXmlWriter*(
     obj: typedesc, input, stream, tag: untyped,
     skipFieldWrite: openarray[string] = [""],
@@ -310,5 +290,5 @@ proc writeXml*[T: not enum](writer: var XmlWriter, obj: T, tag: string) =
 
 
 proc loadXml*[T: not enum](reader: var HXmlParser, obj: var T, tag: string) =
-  mixin writeXml
+  mixin loadXml
   genXmlLoader(T, obj, reader, tag)
