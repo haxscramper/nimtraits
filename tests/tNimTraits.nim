@@ -1,10 +1,16 @@
 import std/[strutils, unittest, macros, streams]
 
-import ../src/nimtraits, ../src/nimtraits/[trait_xml, trait_new]
-import hmisc/other/oswrap
-import hmisc/helpers
-import hnimast
-import hpprint
+import
+  nimtraits,
+  nimtraits/[trait_xml, trait_new]
+
+import
+  hmisc/other/oswrap,
+  hmisc/core/all,
+  hmisc/other/hpprint
+
+import
+  hnimast
 
 
 suite "`trait`":
@@ -67,7 +73,7 @@ suite "`trait`":
 
     storeTraits(Obj, constValue, constValue2)
 
-    proc newObj(
+    proc initObj(
         k1: En1 = e1First, k2: En2 = e2Second, k3: En3 = e3First
       ): Obj =
 
@@ -99,7 +105,7 @@ suite "`trait`":
       pprint obj
       pprint target
 
-    var obj = newObj(e1Second)
+    var obj = initObj(e1Second)
     obj.f13first = "a"
 
     reloadXml(obj)

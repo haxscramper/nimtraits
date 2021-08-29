@@ -1,6 +1,7 @@
 import hnimast
 import hnimast/store_decl
 export hnimast
+import hmisc/core/all
 export store_decl
 
 template defaultImpl*(arg: untyped) {.pragma.}
@@ -31,7 +32,7 @@ macro Default*(obj: untyped): untyped =
     obj[0][1].add newCall("defaultImpl", defaulted)
 
   else:
-    raiseImplementKindError(obj[0])
+    raise newImplementKindError(obj[0])
 
   return obj
 

@@ -3,9 +3,9 @@ import ../nimtraits
 import hnimast
 import std/[xmltree, sequtils]
 
-import hmisc/helpers
+import hmisc/core/all
 import hmisc/hasts/[xml_ast, xsd_ast]
-import hmisc/hdebug_misc
+import hmisc/core/all
 export xml_ast, xsd_ast
 
 type

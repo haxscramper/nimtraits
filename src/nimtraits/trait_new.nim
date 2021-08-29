@@ -31,4 +31,3 @@ macro genNewObject*(obj: typedesc) =
     res
 
   result.add init
-
